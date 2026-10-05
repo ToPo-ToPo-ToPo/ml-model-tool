@@ -1,0 +1,45 @@
+{
+  "mcpServers": {
+    "ml-model-tool": {
+      "command": "uv",
+      "args": ["run", "ml-model-tool-mcp", "--workspace", "{workspace}", "--desktop-url", "{desktop_url}"],
+      "description": "物理問題の機械学習モデルを作る道具。データ仕様から学習データを作り（トポロジー最適化・線形弾性 FEM・TopoDiff の取り込み）、モデル仕様で FNO を学習し、正解と比べて評価する。文章は解釈しない（コマンド行で使う。書き方は手順書 ml-model）。",
+      "timeout": 1800,
+      "aios": {
+        "spec_version": "2.10",
+        "category": "tool",
+        "domain": "machine-learning",
+        "privilege": "filesystem",
+        "inputs": ["json"],
+        "outputs": ["md", "json", "csv", "png"],
+        "capabilities": [
+          "学習データを作る: SIMP のトポロジー最適化結果・線形弾性 FEM の変位場・TopoDiff データセットの取り込み（data）",
+          "モデル仕様（JSON）で PhysicsNeMo の FNO を学習する。入力チャネルの選択・学習件数・エポック数を指定できる（train）",
+          "学習済みモデルを評価する: 正解との誤差、FEM で解いた性能（コンプライアンス）、TopoDiff の評価指標（evaluate）",
+          "学習済みモデルで予測する（predict）",
+          "長い処理はジョブとして裏で走り、job status / job stop で見る・止める。経過・要約・図はこのアプリの窓に出る"
+        ],
+        "internal": false,
+        "gui": {
+          "command": "uv",
+          "args": ["run", "python", "webapp/app.py", "--port", "{port}", "--no-open", "--no-head", "--workspace", "{workspace}"],
+          "port": 5080,
+          "title": "モデル工房",
+          "icon": "🧠"
+        },
+        "i18n": {
+          "en": {
+            "description": "A tool to make machine-learning models of physics problems. Makes training data from a data spec (topology optimization, linear-elastic FEM, TopoDiff import), trains an FNO from a model spec and evaluates it against the truth. Does not interpret prose (use command lines; how to write them is in the skill ml-model).",
+            "capabilities": [
+              "Make training data: SIMP topology optimization results, linear-elastic FEM displacement fields, import of the TopoDiff dataset (data)",
+              "Train a PhysicsNeMo FNO from a model spec (JSON); input channels, number of training samples and epochs can be chosen (train)",
+              "Evaluate a trained model: error against the truth, performance solved by FEM (compliance), TopoDiff's metrics (evaluate)",
+              "Predict with a trained model (predict)",
+              "Long work runs in the background as jobs; check or stop them with job status / job stop. Progress, summaries and figures appear in this app's window"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

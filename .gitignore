@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ml-model-tool: job outputs and local data
+workspace/
+data/
+*.mdlus
+.venv/

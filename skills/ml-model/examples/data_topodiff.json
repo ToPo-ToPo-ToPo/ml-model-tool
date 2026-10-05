@@ -1,0 +1,2 @@
+{"source": "topodiff", "root": "data/dataset_1_diff", "topodiff_repo": "topodiff", "levels": [1, 2],
+ "limit": 3000, "n_test": 100, "n_val": 100}
