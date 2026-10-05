@@ -1,0 +1,4 @@
+{"inputs": ["volfrac", "fix_x", "fix_y", "load_x", "load_y"],
+ "model": {"latent_channels": 64, "num_fno_layers": 4, "num_fno_modes": 16},
+ "loss": "bce",
+ "train": {"epochs": 80, "batch": 32, "lr": 0.001, "n_train": 0, "seed": 0}}

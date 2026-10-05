@@ -1,0 +1,2 @@
+{"source": "simp-topopt", "n": 600, "nelx": 64, "nely": 32, "volfrac": [0.3, 0.5],
+ "supports": ["cantilever", "both-ends", "pin-roller"], "n_test": 60, "n_val": 30, "seed": 0, "workers": 4}
