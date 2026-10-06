@@ -52,25 +52,38 @@ def _show(ax, img: np.ndarray, kind: str, vmax: Optional[float] = None):
 
 
 def compare(path, x: np.ndarray, x_channels: list[str], pred: np.ndarray, truth: Optional[np.ndarray],
-            y_channels: list[str], y_kind: str, title: str, notes: Optional[list[str]] = None) -> None:
-    """One row per case: for every output channel, truth (if any) and prediction side by side."""
+            y_channels: list[str], y_kind: str, title: str, notes: Optional[list] = None) -> None:
+    """One row per case: for every output channel, truth (if any) and prediction side by side.
+
+    ``pred`` is (N, C, H, W), or (N, K, C, H, W) for K generated designs per case (shown as sample 1..K).
+    ``notes`` is one string per case, or one list of K strings per case."""
     plt = _plt()
-    n, cols = len(pred), len(y_channels) * (2 if truth is not None else 1)
+    generative = pred.ndim == 5
+    if not generative:
+        pred = pred[:, None]
+        notes = None if notes is None else [[s] for s in notes]
+    n, k = pred.shape[:2]
+    per = k + (1 if truth is not None else 0)
+    cols = len(y_channels) * per
     fig, axes = plt.subplots(n, cols, figsize=(2.6 * cols + 0.4, 2.4 * n + 0.6), squeeze=False, facecolor="white")
-    for k in range(n):
+    for i in range(n):
         c = 0
         for j, name in enumerate(y_channels):
-            vmax = np.abs(truth[k, j]).max() if truth is not None and y_kind != "density" else None
+            vmax = np.abs(truth[i, j]).max() if truth is not None and y_kind != "density" else None
             if truth is not None:
-                _show(axes[k, c], truth[k, j], y_kind, vmax)
-                _overlay(axes[k, c], x[k], x_channels)
-                axes[k, c].set_title(f"case {k + 1}  {name} truth", fontsize=8, loc="left", color=INK)
+                _show(axes[i, c], truth[i, j], y_kind, vmax)
+                _overlay(axes[i, c], x[i], x_channels)
+                axes[i, c].set_title(f"case {i + 1}  {name} truth", fontsize=8, loc="left", color=INK)
                 c += 1
-            _show(axes[k, c], pred[k, j], y_kind, vmax)
-            _overlay(axes[k, c], x[k], x_channels)
-            note = f"  {notes[k]}" if notes and notes[k] else ""
-            axes[k, c].set_title(f"{name} predicted{note}", fontsize=8, loc="left", color=INK)
-            c += 1
+            for s in range(k):
+                _show(axes[i, c], pred[i, s, j], y_kind, vmax)
+                _overlay(axes[i, c], x[i], x_channels)
+                note = notes[i][s] if notes and s < len(notes[i]) and notes[i][s] else ""
+                label = f"sample {s + 1}" if generative else "predicted"
+                head = f"case {i + 1}  " if truth is None and s == 0 else ""
+                axes[i, c].set_title(f"{head}{name} {label}" + (f"  {note}" if note else ""), fontsize=8,
+                                     loc="left", color=INK)
+                c += 1
     fig.suptitle(title, x=0.01, ha="left", fontsize=10, color=INK)
     fig.tight_layout()
     fig.savefig(path, dpi=100)

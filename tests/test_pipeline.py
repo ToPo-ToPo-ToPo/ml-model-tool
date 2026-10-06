@@ -32,6 +32,7 @@ def test_simp_topopt_pipeline(tmp_path):
     e = _done(jobs.run_evaluate(str(tmp_path / "t"), str(tmp_path / "d"), "test", str(tmp_path / "e")))
     m = json.loads((tmp_path / "e" / "metrics.json").read_text())
     assert m["cases"] == 2 and "compliance_ratio" in m and "iou" in m
+    assert 0 <= m["floating"]["share"] <= 1 and "floating_share" in e["summary"]
     assert (tmp_path / "e" / "compare.png").is_file() and (tmp_path / "e" / "summary.md").is_file()
 
     p = _done(jobs.run_predict(str(tmp_path / "t"), str(tmp_path / "d"), "all", str(tmp_path / "p")))
@@ -61,3 +62,20 @@ def test_fea_elastic_pipeline(tmp_path):
 def test_bad_spec_closes_the_job_as_failed(tmp_path):
     st = jobs.run_train({"inputs": ["nope"]}, str(tmp_path / "missing"), str(tmp_path / "t"))
     assert st["state"] == "failed" and st["error"]["stage"] == "input"
+
+
+def test_floating_material_is_material_not_joined_to_a_support():
+    from ml_model_tool.evaluation import floating_volume, support_elements
+
+    fix = np.zeros((2, 5, 7))
+    fix[:, :, 0] = 1                                   # left edge fixed
+    sup = support_elements(fix)
+    assert sup[:, 0].all() and not sup[:, 1:].any()
+    d = np.zeros((4, 6))
+    d[1, :3] = 1                                       # a bar from the support
+    assert floating_volume(d, sup) == 0
+    d[3, 5] = 1                                        # an island: 1 of 4 material cells
+    assert floating_volume(d, sup) == 0.25
+    d[2, 3] = 1                                        # touches the bar only at a corner: hinged, still floating
+    assert floating_volume(d, sup) == 0.4
+    assert floating_volume(np.zeros((4, 6)), sup) == 1.0

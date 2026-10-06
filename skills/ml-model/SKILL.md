@@ -1,6 +1,6 @@
 ---
 name: ml-model
-description: 物理問題の機械学習モデル（PhysicsNeMo の FNO）を作るときの手順。学習データを作る（トポロジー最適化・線形弾性 FEM・TopoDiff の取り込み）、モデル仕様で学習する、正解と比べて評価する、条件を 1 つずつ変えて詰める。道具 ml-model-tool はコマンド行で使い、文章は解釈しない
+description: 物理問題の機械学習モデル（PhysicsNeMo の FNO と、生成モデル: 拡散モデル・Flow matching・VAE・GAN）を作るときの手順。学習データを作る（トポロジー最適化・線形弾性 FEM・TopoDiff の取り込み）、モデル仕様で学習する（1 条件に 1 つの答えの FNO か、何通りもの案を生成する生成モデル）、正解と比べて評価する、条件を 1 つずつ変えて詰める。道具 ml-model-tool はコマンド行で使い、文章は解釈しない
 ---
 
 # 物理の機械学習モデルを作る（`mmt`）
@@ -28,7 +28,8 @@ description: 物理問題の機械学習モデル（PhysicsNeMo の FNO）を作
 - `app("ml-model-tool", "data --spec data.json")` … データセットを作る
 - `app("ml-model-tool", "train --spec model.json --data jobs/<data のジョブ>")` … 学習する
 - `app("ml-model-tool", "evaluate --model jobs/<train のジョブ> --data jobs/<data のジョブ>")` … 評価する
-- `app("ml-model-tool", "predict --model jobs/<train のジョブ> --data <データセット>")` … 予測する
+- `app("ml-model-tool", "predict --model jobs/<train のジョブ> --data <データセット>")` … 予測する（生成モデルは案を作る）
+- 生成モデルは `evaluate` / `predict` に `--samples K`（1 条件あたりの案の数）を、diffusion / flow はさらに `--steps S`（生成の段数）を足せる
 - `app("ml-model-tool", "help train")` … 引数の意味と既定値（打つ前に確かめられる）
 
 パスは作業フォルダからの相対パス。返事の `artifacts` に成果物のパスが並ぶので、次の行にそのまま転記する。
@@ -47,14 +48,45 @@ description: 物理問題の機械学習モデル（PhysicsNeMo の FNO）を作
    - `inputs`: データの入力チャネルの一部だけを使う（例: sed を外す）。**入力の効果を確かめる正しいやり方**
    - `train.n_train`: 学習件数を絞る（データ量の効果を確かめる）。`train.epochs`・`lr`・`batch`
    - `loss`: 密度は `bce`、場は `mse`（既定でそうなる）
+   - `model.type`: `fno`（既定。1 条件に 1 つの答え）か生成モデル `diffusion` / `flow` / `vae` / `gan`（下の「生成モデル」）
 3. **評価する**: `evaluate --model jobs/<train> --data jobs/<data>`（既定 `--split test`）。
    `--split train` も評価すると、学習データとテストの差（丸暗記の度合い）が分かる。
    - 密度: IoU（0.5 で二値化した材料の重なり）・MAE・体積の誤差
-   - `simp-topopt` はさらに、予測した形を FEM で解いたコンプライアンス ÷ SIMP（1 に近いほど良い。2 倍以上は破綻）
+   - `simp-topopt` はさらに、予測した形を FEM で解いたコンプライアンス ÷ SIMP（1 に近いほど良い。2 倍以上は破綻）と、
+     浮いた材料（拘束までつながっていない材料。`floating.share` が浮いた材料を含む案の割合）
    - 場: 相対 L2 誤差（1 は「全部 0 と予測」と同じ）
    - TopoDiff のテスト: `--data jobs/<data>/level_1.npz` で TopoDiff の評価（CE / VFE / LD / FM）
+   - 生成モデル: 上の数値は 1 案目。加えて `diversity`（案どうしの違い）と `best_of_k`（K 案の中で最も良い案）
 4. **詰める**: 結果を見て次に変える 1 つを決める（下の「分かっていること」）。前回と同じ `data` ジョブ・
    同じテスト件で比べ、`summary.md` の数値と `compare.png` を並べて報告する。
+
+## 生成モデル（`model.type: diffusion` / `flow` / `vae` / `gan`）
+
+入力チャネルを条件に、乱数から密度（や場）を作る。**同じ条件から何通りもの案を出せる**のが FNO との違い。
+
+| type | 方式 | 生成 |
+|---|---|---|
+| `diffusion` | 条件付き拡散モデル（TopoDiff と同じ考え方。PhysicsNeMo の TopoDiff の U-Net） | ノイズを `steps` 段で除く（既定 50） |
+| `flow` | Flow matching（同じ U-Net） | ノイズから `steps` 段で流す（既定 20） |
+| `vae` | 条件付き VAE | 1 回で作る |
+| `gan` | 条件付き GAN（PatchGAN の識別器） | 1 回で作る |
+
+例は `examples/model_diffusion.json`・`model_flow.json`・`model_vae.json`・`model_gan.json`。
+
+1. **FNO と同じデータ・同じテスト件で比べる。** まず FNO を学習・評価し、次に `model.type` だけを変える
+   （入力チャネルも同じにする）。比べる数値は 1 案目の IoU・コンプライアンス比（1 回引いた案どうしの比較）。
+2. **GPU か Apple の GPU（MPS）で学習する。** `device: auto` は CUDA → MPS → CPU。CPU では非常に遅い
+   （同じ U-Net で MPS の約 100 倍の時間）。既定は 200 エポック。損失は種類ごとに違う量で、
+   種類どうしや FNO の損失とは比べられない（比べるのは評価の数値）。GAN は最後のエポックを保存する。
+3. **評価で見るもの**:
+   - `generative.diversity`（材料の判定が食い違うセルの割合）が 0 に近いなら、条件から 1 つの形しか出せていない
+   - `best_of_k.compliance_ratio`（K 案を FEM で解いて最も良い案）が 1 案目よりはっきり良いなら、
+     多く引いて FEM で選ぶ使い方が効く。`compliance_ratio_all.share_gt_2` が大きいなら破綻する案が多い
+   - `compare.png` は正解と 4 案を並べる。荷重から支点までつながっているか、浮いた材料が無いかを見る
+4. **案の数と段数**: `--samples 8` で案を増やす（時間は比例）。`--steps`（diffusion / flow）は少ないほど速いが粗くなる。
+   変えたら同じ `--steps` どうしで比べる。
+5. **似た形しか出ない**（`diversity` が 0 に近い）とき: VAE は `kl_weight` を上げる、GAN は `diversity_weight` を上げるか
+   `l1_weight` を下げる。
 
 ## 分かっていること（このツールでの検証から）
 
@@ -70,4 +102,4 @@ description: 物理問題の機械学習モデル（PhysicsNeMo の FNO）を作
 
 `examples/` に仕様の例がある（`read_skill("ml-model", "examples/data_simp_topopt.json")` で読める）:
 `data_simp_topopt.json`・`data_fea_elastic.json`・`data_topodiff.json`・`model_default.json`・
-`model_ablation_no_sed.json`（sed を外した比較用）。
+`model_ablation_no_sed.json`（sed を外した比較用）・`model_diffusion.json`・`model_flow.json`・`model_vae.json`・`model_gan.json`（生成モデル）。
