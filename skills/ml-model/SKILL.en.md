@@ -16,7 +16,7 @@ the results is your job; the tool's job is to make data, train and evaluate exac
    loss falls but the validation loss does not, the model memorized (overfitting). When `overfit_ratio`
    (validation / training loss) is above 2, add data or revisit the inputs / model.
 3. **No point loads or point supports** (singular in 2D elasticity). The sources already use lines of 2-3 nodes.
-4. **Do not wait on long work.** `data` (SIMP takes seconds per sample) and `train` (tens of minutes to hours on a CPU)
+4. **Do not wait on long work.** `data` (SIMP takes seconds per sample) and `train` (minutes to tens of minutes on a GPU / MPS, tens of times longer on a CPU)
    are jobs. If the answer is `state: accepted`, check progress with `job status --job-dir jobs/<…>`; stop with `job stop`.
 5. **Fix failures from `error.stage` and the message.** Do not retype the same line. For `spec` errors (unknown key,
    out-of-range value) fix only the JSON.
@@ -42,19 +42,23 @@ Read `summary.md` first and look at the figures (`preview.png` / `loss.png` / `c
      a volume fraction range. 6 input channels (volfrac, fix_x, fix_y, load_x, load_y, sed) → density
    - `fea-elastic`: linear elasticity on a full square (64×64 by default); two fixed lines and one line load anywhere.
      5 input channels (material, fix_x, fix_y, load_x, load_y) → displacement ux, uy
+   - `simp-fea`: SIMP-optimized designs (64×32 by default) analysed by FEM under `load_cases` loads each.
+     5 inputs (density, fix_x, fix_y, load_x, load_y) → ux, uy, von_mises, energy (an FEM surrogate).
+     `target: "displacement"` learns the nodal displacements ux, uy (`train.physics` adds the equilibrium to the loss)
    - `topodiff`: import the TopoDiff dataset (`root` = the `dataset_1_diff` folder a person placed). Same 5 inputs as TopoDiff.
      Test `levels` become `level_1.npz` / `level_2.npz`
 2. **Train**: write `model.json`, run `train --spec model.json --data jobs/<data>`. `{}` runs with defaults.
    - `inputs`: use only some input channels (e.g. drop sed) — **the right way to test an input**
    - `train.n_train`: limit the training samples (to test data size). `train.epochs`, `lr`, `batch`
-   - `loss`: `bce` for density, `mse` for fields (the defaults)
+   - `loss`: `bce` for density, `rel_l2` for fields (the defaults)
    - `model.type`: `fno` (default; one answer per condition) or a generative `diffusion` / `flow` / `vae` / `gan` (see "Generative models")
 3. **Evaluate**: `evaluate --model jobs/<train> --data jobs/<data>` (default `--split test`). Also evaluating `--split train`
    shows the gap between training data and test (how much was memorized).
    - density: IoU (material overlap at 0.5), MAE, volume error
    - `simp-topopt` also: compliance of the predicted design by FEM / SIMP (close to 1 is good; above 2 means a broken design)
      and floating material (material not joined to a support; `floating.share` = share of designs that have some)
-   - fields: relative L2 error (1 is the same as predicting all zeros)
+   - fields: relative L2 error (1 is the same as predicting all zeros), also per quantity when there are several
+   - `simp-fea` also: the peak von Mises stress error and the compliance error from the sum of the predicted energy
    - TopoDiff tests: `--data jobs/<data>/level_1.npz` gives TopoDiff's metrics (CE / VFE / LD / FM)
    - generative models: the numbers above are of design 1, plus `diversity` (how different the designs are) and
      `best_of_k` (the best of the K designs)

@@ -23,6 +23,38 @@
 入力（要素の格子）: `volfrac`・`fix_x`・`fix_y`・`load_x`・`load_y`・`sed`（全面材料の FEM のひずみエネルギー密度。
 log(sed/平均) を [-10, 10] に切って 5 で割る）。出力: `density`。`aux`: 節点の固定・荷重、SIMP 結果のコンプライアンス。
 
+### `simp-fea` — 最適化した形状の FEM 結果（FEM のサロゲート）
+
+| キー | 既定 | 意味 |
+|---|---|---|
+| `n` | 1000 | 形状の数（1 つごとに SIMP を最後まで回す） |
+| `load_cases` | 4 | 1 形状にかける荷重ケースの数（1〜16）。件数 = `n` × `load_cases` |
+| `target` | `"fields"` | 学ぶもの。`fields`: 要素の格子の ux・uy・von_mises・energy。`displacement`: 節点の格子の ux・uy（FEM の未知数そのもの。物理の項 `train.physics` を使える） |
+| `nelx`・`nely`・`volfrac`・`supports`・`load_nodes`・`rmin`・`maxiter`・`workers` | `simp-topopt` と同じ | 形状の作り方 |
+| `n_test`, `n_val`, `seed` | 100, 50, 0 | テスト・検証の**形状**の数（その形状の荷重ケースは全部同じ側に入る） |
+
+形状は `simp-topopt` と同じ作り方（拘束 3 種・境界上の線荷重・体積率・SIMP）。荷重ケースの 1 つ目は最適化に使った荷重、
+残りは材料に接する境界上の新しい線荷重（2〜3 節点、合計 1、向きランダム。拘束は同じ）。最適化に使っていない荷重も
+かけるのは He ら（CMAME 2023）と同じで、同じ形状に違う荷重をかけた結果を学ぶため。形状は SIMP の密度のまま使う
+（E = Emin + x³(1 − Emin)）。
+
+入力（要素の格子）: `density`・`fix_x`・`fix_y`・`load_x`・`load_y`。出力（要素の格子、FEM 1 回）:
+`ux`・`uy`（要素の 4 節点の平均。y は上向き）・`von_mises`（要素中心のミーゼス応力、平面応力）・`energy`
+（要素ごとのコンプライアンスへの寄与。全要素の合計がコンプライアンス Fᵀu に一致する）。`aux`: 節点の固定・荷重、
+コンプライアンス、形状の番号。
+
+最適化に使っていない荷重では、細い部材が大きく曲がって変位が非常に大きくなる件がある（変位の最大値は中央値の
+100 倍を超えることがある）。そのため場の既定の損失は件ごとの相対 L2 誤差にしている（下のモデル仕様）。
+
+`target: "displacement"` では、入力・出力とも節点の格子（`(nely+1, nelx+1)`）になる。入力の `density` は節点のまわりの
+要素の平均、`fix_*`・`load_*` は節点の値。出力は節点の変位 `ux`・`uy`。`aux` に要素の密度（`density`）も持つ。
+
+評価（`task: fea`）: 量ごとの相対 L2 誤差（`rel_l2_by_channel`）、最大ミーゼス応力の誤差
+（`peak_stress_error` = |予測の最大 − 正解の最大| ÷ 正解の最大。先行研究で必ず報告される）、予測した `energy` の合計
+から出したコンプライアンスの誤差（`compliance_error`）。節点の変位を予測するモデルでは、予測した変位から FEM と同じ式で
+応力と energy を計算して同じ指標を出し（`derived_rel_l2`）、つり合いの残差 ‖K(ρ)u − F‖ ÷ ‖F‖（`equilibrium_residual`。
+FEM の解では 0）も出す。
+
 ### `fea-elastic` — 線形弾性の変位場
 
 | キー | 既定 | 意味 |
@@ -75,7 +107,8 @@ log(sed/平均) を [-10, 10] に切って 5 で割る）。出力: `density`。
 ```
 
 - `model`: PhysicsNeMo の FNO の大きさ。`coord_features` は座標 2 チャネルを自動で足す（PhysicsNeMo の既定）
-- `loss`: `bce`（密度。出力に sigmoid）か `mse`（場）。省略でデータの種類から決まる
+- `loss`: `bce`（密度。出力に sigmoid）・`rel_l2`（場の既定。件ごと・量ごとの相対 L2 誤差の平均。FNO の論文と同じで、
+  値の大きい件に引きずられない）・`mse`。省略でデータの種類から決まる
 
 ### `diffusion` — 条件付き拡散モデル
 
@@ -170,7 +203,11 @@ spectral normalization 付き）を交互に学ぶ。生成は z を引いて生
 ### 共通
 
 - `inputs`: データの入力チャネルのうち使うもの（省略で全部）。生成モデルでは生成の条件になる
-- `train.n_train`: 学習に使う件数（0 = 全部）。`device`: `auto`・`cpu`・`cuda`・`mps`（FNO の FFT が MPS で動くかは未確認）
+- `train.n_train`: 学習に使う件数（0 = 全部）。`device`: `auto`（CUDA → Apple の GPU（MPS）→ CPU）・`cpu`・`cuda`・`mps`。FNO も MPS で CPU と同じ結果（差 1e-7 程度）になり、約 20 倍速い
+- `train.physics`（既定 0 = 無し）: FNO の損失に FEM のつり合いの式を足す。損失 = データの損失 + `physics` ×
+  ‖K(ρ)u − F‖ ÷ ‖F‖（拘束していない自由度で）。K(ρ)u は行列を作らずに要素ごとに足し合わせて求め（`physics.py`）、
+  微分できる。節点の変位を正解に持つデータ（`simp-fea` の `target: "displacement"`）だけで使える。検証の損失は
+  データの損失のままなので、重みを変えた学習どうしを比べられる。`history.csv` に `train_residual` の列が増える
 - 学習率は OneCycle。検証の損失が最小のエポックを `model.mdlus` に保存する
 
 ## 生成モデルの評価（`evaluate`）

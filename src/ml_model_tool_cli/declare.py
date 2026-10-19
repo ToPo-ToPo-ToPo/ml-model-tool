@@ -78,10 +78,14 @@ def _check_train(call) -> None:
         raise InputError("data", tr("このデータセットには正解（y）が無い（評価専用。train には data ジョブの dataset.npz を渡す）",
                                     "this dataset has no targets (y) (evaluation only; pass dataset.npz of a data job to train)"))
     try:
-        specs.model_spec(read_json(call.args["spec"]), meta["x_channels"], meta["y_kind"],
-                         grid=tuple(meta["shape"]["y"][2:]))
+        spec = specs.model_spec(read_json(call.args["spec"]), meta["x_channels"], meta["y_kind"],
+                                grid=tuple(meta["shape"]["y"][2:]))
     except ValueError as exc:
         raise InputError("spec", str(exc)) from exc
+    if spec["train"]["physics"] and (meta.get("grid", {}).get("on") != "nodes" or "physics" not in meta):
+        raise InputError("spec", tr("train.physics は節点の変位を正解に持つデータだけ（simp-fea の target: \"displacement\"）",
+                                    "train.physics needs nodal displacements as targets (simp-fea with "
+                                    "target: \"displacement\")"))
 
 
 def _check_sampling(call) -> None:

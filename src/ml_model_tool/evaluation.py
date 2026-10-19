@@ -7,6 +7,11 @@ Domain checks, chosen by the dataset's task:
   topopt          compliance of the predicted density by FEM / compliance of the SIMP design
                   (median, share <= 1.05, share > 2, worst), and floating material: material
                   (density >= 0.5) not joined through element edges to any supported element
+  fea             FEM results on designs (simp-fea): relative L2 per channel, the peak von Mises stress
+                  error (|max pred - max truth| / max truth, as the literature reports) and the compliance
+                  from the predicted energies (sum of ``energy``) against the FEM compliance. For nodal
+                  displacements (target displacement) the stress and energy are computed from the predicted
+                  displacement as the FEM does, and the equilibrium residual ||K u - F|| / ||F|| is added
   topodiff-level  TopoDiff's own analysis (SolidsPy FEM): CE, VFE, LD, FM as in the paper
 Generative models make K designs per condition. The metrics above are of the first design (one draw,
 comparable with an FNO); ``generative`` adds the diversity of the K designs and best-of-K numbers
@@ -52,7 +57,7 @@ def _rel_l2(pred: np.ndarray, y: np.ndarray) -> np.ndarray:
     return np.linalg.norm(err, axis=1) / np.maximum(np.linalg.norm(y.reshape(n, -1), axis=1), 1e-12)
 
 
-def generic_metrics(pred: np.ndarray, y: np.ndarray, y_kind: str) -> dict:
+def generic_metrics(pred: np.ndarray, y: np.ndarray, y_kind: str, y_channels=None) -> dict:
     n = len(pred)
     if y_kind == "density":
         p = np.clip(pred, 1e-6, 1 - 1e-6)
@@ -60,7 +65,24 @@ def generic_metrics(pred: np.ndarray, y: np.ndarray, y_kind: str) -> dict:
         return {"mae": _stats(np.abs(pred - y).reshape(n, -1).mean(1)), "bce": _stats(bce),
                 "iou": _stats(_iou(pred, y)),
                 "volume_error": _stats(np.abs(pred.reshape(n, -1).mean(1) - y.reshape(n, -1).mean(1)))}
-    return {"mse": _stats(((pred - y).reshape(n, -1) ** 2).mean(1), 6), "rel_l2": _stats(_rel_l2(pred, y))}
+    out = {"mse": _stats(((pred - y).reshape(n, -1) ** 2).mean(1), 6), "rel_l2": _stats(_rel_l2(pred, y))}
+    if y_channels and len(y_channels) > 1:       # channels of different units: also one by one
+        out["rel_l2_by_channel"] = {c: _stats(_rel_l2(pred[:, j], y[:, j])) for j, c in enumerate(y_channels)}
+    return out
+
+
+def fea_metrics(pred: np.ndarray, y: np.ndarray, y_channels: list[str], compliance=None) -> dict:
+    """Peak von Mises stress error and the compliance from the predicted element energies."""
+    out = {}
+    n = len(pred)
+    if "von_mises" in y_channels:
+        j = y_channels.index("von_mises")
+        pk, tk = pred[:, j].reshape(n, -1).max(1), y[:, j].reshape(n, -1).max(1)
+        out["peak_stress_error"] = _stats(np.abs(pk - tk) / np.maximum(tk, 1e-12))
+    if "energy" in y_channels and compliance is not None:
+        c = np.asarray(compliance, float)
+        out["compliance_error"] = _stats(np.abs(pred[:, y_channels.index("energy")].reshape(n, -1).sum(1) - c) / c)
+    return out
 
 
 def diversity(samples: np.ndarray, y_kind: str) -> np.ndarray:
@@ -126,6 +148,33 @@ def topopt_floating(ds: Dataset, idx: np.ndarray, samples: np.ndarray) -> np.nda
         sup = support_elements(ds.aux["fix"][case])
         for j in range(samples.shape[1]):
             out[i, j] = floating_volume(samples[i, j, 0], sup)
+    return out
+
+
+def fea_nodal_metrics(ds: Dataset, idx: np.ndarray, pred: np.ndarray) -> dict:
+    """Stress, energy and compliance from predicted nodal displacements, against the same from the FEM's."""
+    import torch
+
+    from .fem import FEM, node_image_to_dofs
+    from .physics import Equilibrium
+
+    g, ph = ds.meta["grid"], ds.meta["physics"]
+    fem = FEM(g["nelx"], g["nely"], ph["penal"], ph["emin"], ph["nu"])
+    n = len(idx)
+    vm_p, vm_t, en_p, en_t = (np.zeros((n, g["nely"], g["nelx"])) for _ in range(4))
+    for k, i in enumerate(idx):
+        xvec = fem.img_to_vec(ds.aux["density"][i]).astype(float)
+        fp = fem.fields_from_displacement(xvec, node_image_to_dofs(pred[k]))
+        ft = fem.fields_from_displacement(xvec, node_image_to_dofs(ds.y[i]))
+        vm_p[k], vm_t[k], en_p[k], en_t[k] = fp["von_mises"], ft["von_mises"], fp["energy"], ft["energy"]
+    out = {"derived_rel_l2": {"von_mises": _stats(_rel_l2(vm_p, vm_t)), "energy": _stats(_rel_l2(en_p, en_t))}}
+    out.update(fea_metrics(np.stack([vm_p, en_p], 1), np.stack([vm_t, en_t], 1), ["von_mises", "energy"],
+                           ds.aux["compliance"][idx]))
+    eq = Equilibrium(ph["penal"], ph["emin"], ph["nu"])
+    eq.KE = eq.KE.double()
+    T = lambda a: torch.from_numpy(np.asarray(a, np.float64))
+    r = eq.residual(T(pred), T(ds.aux["density"][idx]), T(ds.aux["fix"][idx]), T(ds.aux["load"][idx])).numpy()
+    out["equilibrium_residual"] = _stats(r)
     return out
 
 
@@ -230,7 +279,7 @@ def evaluate(bundle: Bundle, ds: Dataset, split: str, out_dir: str | Path,
         S = bundle.predict(ds.x[idx], ds.x_channels)[:, None]
     pred, k = S[:, 0], S.shape[1]
     if y is not None:
-        metrics.update(generic_metrics(pred, y, y_kind))
+        metrics.update(generic_metrics(pred, y, y_kind, ds.meta["y_channels"]))
     if bundle.generative and k > 1:
         metrics["generative"]["diversity"] = _stats(diversity(S, y_kind))
         if y is not None:
@@ -248,6 +297,12 @@ def evaluate(bundle: Bundle, ds: Dataset, split: str, out_dir: str | Path,
             metrics["generative"]["floating_all"] = _floating_stats(FL.ravel())
         notes = [[f"C x{r:.2f}" + (" float" if f > 0 else "") for r, f in zip(row[:N_FIGURE_SAMPLES], frow)]
                  for row, frow in zip(R[:N_FIGURE], FL[:N_FIGURE])]
+    elif task == "fea" and y is not None:
+        if ds.meta.get("grid", {}).get("on") == "nodes" and "density" in ds.aux:
+            metrics.update(fea_nodal_metrics(ds, idx, pred))
+        else:
+            metrics.update(fea_metrics(pred, y, ds.meta["y_channels"], ds.aux["compliance"][idx]
+                                       if "compliance" in ds.aux else None))
     elif task == "topodiff-level":
         per = [topodiff_cases(ds, S[:, j], out, progress, 0.5 + 0.45 * j / k, 0.5 + 0.45 * (j + 1) / k)
                for j in range(k)]

@@ -26,12 +26,12 @@ INFO_SCHEMA = "ml-model-tool-model/1"
 
 
 def pick_device(name: str, kind: str = "fno") -> str:
-    """``auto``: CUDA if present; for generative models also Apple's GPU (MPS) — FNO's FFT on MPS is unchecked."""
+    """``auto``: CUDA, else Apple's GPU (MPS), else the CPU (FNO on MPS matches the CPU to 1e-7)."""
     if name != "auto":
         return name
     if torch.cuda.is_available():
         return "cuda"
-    if kind in GENERATIVE and torch.backends.mps.is_available():
+    if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
 

@@ -17,7 +17,7 @@
 
 | コマンド | 内容 |
 |---|---|
-| `data --spec data.json` | 学習データを作る。`simp-topopt`（SIMP のトポロジー最適化）・`fea-elastic`（線形弾性 FEM の変位場）・`topodiff`（TopoDiff データセットの取り込み） |
+| `data --spec data.json` | 学習データを作る。`simp-topopt`（SIMP のトポロジー最適化）・`simp-fea`（最適化した形状の FEM 結果: 変位・ミーゼス応力・ひずみエネルギー）・`fea-elastic`（線形弾性 FEM の変位場）・`topodiff`（TopoDiff データセットの取り込み） |
 | `train --spec model.json --data <data のジョブ>` | モデルを学習する。`model.type` で `fno` か生成モデル（`diffusion` / `flow` / `vae` / `gan`）。入力チャネルの選択・学習件数・エポック数などを仕様で指定 |
 | `evaluate --model <train のジョブ> --data <データ>` | 正解との誤差、FEM で解いたコンプライアンス（トポロジー最適化）、TopoDiff の評価指標。生成モデルは 1 条件から K 案を作り、案の多様性と K 案中の最良も出す（`--samples` / `--steps`） |
 | `predict --model <train のジョブ> --data <データ>` | 予測（生成モデルは K 案を生成） |

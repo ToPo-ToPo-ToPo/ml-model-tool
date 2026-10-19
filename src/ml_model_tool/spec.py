@@ -13,9 +13,9 @@ Model spec (``train --spec model.json --data <dataset>``); ``model.type`` picks 
     {"model":  {"type": "fno", "latent_channels": 64, "num_fno_layers": 4, "num_fno_modes": 16,
                 "padding": 8, "decoder_layers": 1, "decoder_layer_size": 64, "coord_features": true},
      "inputs": ["volfrac", "fix_x", ...],      # subset of the dataset's x channels (default: all)
-     "loss":   "bce" | "mse",                  # default: bce for density targets, mse for fields
+     "loss":   "bce" | "mse" | "rel_l2",       # default: bce for density targets, rel_l2 for fields
      "train":  {"epochs": 40, "batch": 32, "lr": 0.001, "weight_decay": 0.0001,
-                "n_train": 0, "seed": 0, "device": "auto", "ema": 0}}
+                "n_train": 0, "seed": 0, "device": "auto", "ema": 0, "physics": 0}}
 
     {"model":  {"type": "diffusion", "model_channels": 64, "channel_mult": [1, 2, 2, 2], "num_blocks": 2,
                 "attn_levels": [2], "dropout": 0.1, "timesteps": 1000, "schedule": "cosine"},
@@ -48,7 +48,7 @@ MODEL_DEFAULTS = {
 MODEL_TYPES = tuple(MODEL_DEFAULTS)
 GENERATIVE = ("diffusion", "flow", "vae", "gan")
 TRAIN_DEFAULTS = {"epochs": 40, "batch": 32, "lr": 1e-3, "weight_decay": 1e-4, "n_train": 0, "seed": 0,
-                  "device": "auto", "ema": 0.0}
+                  "device": "auto", "ema": 0.0, "physics": 0.0}
 TRAIN_DEFAULTS_BY_TYPE = {kind: {"epochs": 200, "lr": 2e-4, "weight_decay": 0.0, "ema": 0.999} for kind in GENERATIVE}
 SAMPLE_DEFAULTS_BY_TYPE = {
     "diffusion": {"samples": 4, "steps": 50, "eta": 0.0, "seed": 0},
@@ -59,7 +59,7 @@ SAMPLE_DEFAULTS_BY_TYPE = {
 SAMPLE_KEYS = list(dict.fromkeys(k for d in SAMPLE_DEFAULTS_BY_TYPE.values() for k in d))
 MAX_SAMPLES = 64
 DEVICES = ("auto", "cpu", "cuda", "mps")
-LOSSES = ("bce", "mse")
+LOSSES = ("bce", "mse", "rel_l2")
 SCHEDULES = ("cosine", "linear")
 ATTN_MIN_CHANNELS = 64          # PhysicsNeMo's U-Net block: one attention head per 64 channels
 
@@ -80,7 +80,7 @@ def data_spec(doc: dict) -> dict:
     if missing:
         raise ValueError(f"{doc['source']}: missing {', '.join(missing)}")
     for key in ("n", "n_test", "n_val", "seed", "limit", "size", "nelx", "nely", "maxiter", "workers",
-                "min_support_distance"):
+                "min_support_distance", "load_cases"):
         if key in spec and not (isinstance(spec[key], int) and not isinstance(spec[key], bool) and spec[key] >= 0):
             raise ValueError(f"{key} must be a non-negative integer")
     if "n" in spec and spec["n"] < 10:
@@ -176,11 +176,11 @@ def model_spec(doc: dict, x_channels: list[str], y_kind: str, grid=None) -> dict
             raise ValueError(f"loss: a {kind} model has its own loss; leave loss out")
         loss = kind
     else:
-        loss = doc.get("loss") or ("bce" if y_kind == "density" else "mse")
+        loss = doc.get("loss") or ("bce" if y_kind == "density" else "rel_l2")
         if loss not in LOSSES:
             raise ValueError(f"loss must be one of {', '.join(LOSSES)}")
         if loss == "bce" and y_kind != "density":
-            raise ValueError("loss bce needs density targets in [0, 1]; use mse for fields")
+            raise ValueError("loss bce needs density targets in [0, 1]; use rel_l2 or mse for fields")
     for k in ("epochs", "batch"):
         if not _pos_int(train[k]):
             raise ValueError(f"train.{k} must be a positive integer")
@@ -190,6 +190,11 @@ def model_spec(doc: dict, x_channels: list[str], y_kind: str, grid=None) -> dict
         raise ValueError("train.lr must be positive")
     if not (isinstance(train["ema"], (int, float)) and 0 <= train["ema"] < 1):
         raise ValueError("train.ema must be in [0, 1) (0 = off; e.g. 0.999)")
+    if not (isinstance(train["physics"], (int, float)) and not isinstance(train["physics"], bool)
+            and train["physics"] >= 0):
+        raise ValueError("train.physics must be a non-negative number (0 = off)")
+    if train["physics"] and kind != "fno":
+        raise ValueError("train.physics: the equilibrium term is for model.type fno (it predicts the displacement)")
     if train["device"] not in DEVICES:
         raise ValueError(f"train.device must be one of {', '.join(DEVICES)}")
     out = {"model": model, "inputs": inputs, "loss": loss, "train": train}

@@ -1,9 +1,15 @@
 """Training: one loop for every dataset and model type (the model spec decides inputs, loss and schedule).
 
-    fno        the loss (bce / mse) between the prediction and the target
+    fno        the loss (bce / mse / rel_l2) between the prediction and the target; rel_l2 is the relative L2
+               error per sample and channel (as in the FNO papers: every sample counts the same, however
+               large its values)
     generative the kind's own loss (``generative.py``: noise / velocity mse, VAE's reconstruction + KL,
                GAN's adversarial + L1, with the discriminator updated before every generator step);
                the validation loss uses fixed noise so epochs can be compared
+
+``train.physics`` > 0 adds the equilibrium of the FEM to the loss of an FNO that predicts nodal
+displacements (``simp-fea`` with ``target: displacement``): loss = data loss + physics x ||K(rho) u - F|| / ||F||
+(``physics.py``). The validation loss stays the data loss, so runs with different weights compare.
 
 ``train.ema`` > 0 keeps an exponential moving average of the weights; validation and the saved model
 use the averaged weights (the usual practice for generative models). A GAN saves its last epoch.
@@ -33,6 +39,8 @@ VAL_SEED = 1234
 def _loss_fn(name: str):
     if name == "bce":
         return lambda out, y: Fn.binary_cross_entropy_with_logits(out, y)
+    if name == "rel_l2":
+        return lambda out, y: ((out - y).flatten(2).norm(dim=2) / (y.flatten(2).norm(dim=2) + 1e-12)).mean()
     return lambda out, y: Fn.mse_loss(out, y)
 
 
@@ -41,11 +49,34 @@ LOSS_NAMES = {"diffusion": "noise mse", "flow": "velocity mse", "vae": "reconstr
 
 
 class _Regression(Objective):
-    def __init__(self, spec: dict):
+    def __init__(self, spec: dict, equilibrium=None):
         self.fn = _loss_fn(spec["loss"])
+        self.weight = float(spec["train"]["physics"])
+        self.equilibrium = equilibrium
+        self.last_physics = None
 
-    def loss(self, net, x, y, gen=None):
-        return self.fn(net(x), y)
+    def loss(self, net, x, y, gen=None, aux=None):
+        out = net(x)
+        loss = self.fn(out, y)
+        if aux is not None and self.weight > 0:
+            r = self.equilibrium.residual(out, aux["density"], aux["fix"], aux["load"]).mean()
+            self.last_physics = r.item()
+            loss = loss + self.weight * r
+        return loss
+
+
+def _physics_aux(ds: Dataset, spec: dict, dev: str):
+    """The design, supports and loads of every sample, for the equilibrium term (None when it is off)."""
+    if not spec["train"]["physics"]:
+        return None, None
+    if ds.meta.get("grid", {}).get("on") != "nodes" or "physics" not in ds.meta or ds.meta["y_channels"] != ["ux", "uy"]:
+        raise ValueError("train.physics needs nodal displacements as targets (data source simp-fea with "
+                         'target: "displacement")')
+    from .physics import Equilibrium
+
+    eq = Equilibrium(ds.meta["physics"]["penal"], ds.meta["physics"]["emin"], ds.meta["physics"]["nu"], dev)
+    aux = {k: torch.from_numpy(np.ascontiguousarray(ds.aux[k], dtype=np.float32)) for k in ("density", "fix", "load")}
+    return eq, aux
 
 
 class _Ema:
@@ -91,6 +122,7 @@ def train(spec: dict, ds: Dataset, out_dir: str | Path, progress: Callable[[floa
     info = {"spec": spec, "dataset": str(ds.path) if ds.path else None, "x_channels": ds.x_channels,
             "y_channels": ds.meta["y_channels"], "y_kind": ds.meta["y_kind"], "task": ds.meta.get("task"),
             "device": dev, "n_train": int(len(tr)), "n_val": int(len(va))}
+    phys = None
     if kind in mdl.GENERATIVE:
         from .generative import make, target_norm
 
@@ -98,7 +130,8 @@ def train(spec: dict, ds: Dataset, out_dir: str | Path, progress: Callable[[floa
         objective = make(spec["model"], norm, grid, dev, cond_channels=x.shape[1], lr=tr_cfg["lr"], train=True)
         info["generative"] = {"norm": norm, "grid": list(grid), "padded": list(objective.padded)}
     else:
-        objective = _Regression(spec)
+        equilibrium, phys = _physics_aux(ds, spec, dev)
+        objective = _Regression(spec, equilibrium)
     tr, va = torch.from_numpy(tr), torch.from_numpy(va)
 
     net = mdl.build(spec, x.shape[1], y.shape[1], grid).to(dev)
@@ -110,18 +143,23 @@ def train(spec: dict, ds: Dataset, out_dir: str | Path, progress: Callable[[floa
     mdl.save_info(out, info)
     history, best = [], (float("inf"), -1)
     hist_path = out / "history.csv"
+    physics_on = phys is not None
     with hist_path.open("w", newline="") as f:
-        csv.writer(f).writerow(["epoch", "train_loss", "val_loss", "seconds"])
+        csv.writer(f).writerow(["epoch", "train_loss", "val_loss", "seconds"] + (["train_residual"] if physics_on else []))
     t_all = time.time()
     for ep in range(tr_cfg["epochs"]):
         t0 = time.time()
         net.train()
         objective.set_train(True)
-        tot = 0.0
+        tot, res = 0.0, 0.0
         for idx in tr[torch.randperm(len(tr))].split(tr_cfg["batch"]):
             xb, yb = x[idx].to(dev), y[idx].to(dev)
             objective.pre_step(net, xb, yb)
-            loss = objective.loss(net, xb, yb)
+            if physics_on:
+                loss = objective.loss(net, xb, yb, aux={k: v[idx].to(dev) for k, v in phys.items()})
+                res += objective.last_physics * len(idx)
+            else:
+                loss = objective.loss(net, xb, yb)
             opt.zero_grad(); loss.backward(); opt.step(); sched.step()
             if ema is not None:
                 ema.update(net)
@@ -135,7 +173,7 @@ def train(spec: dict, ds: Dataset, out_dir: str | Path, progress: Callable[[floa
         with torch.no_grad():
             val = sum(objective.val_loss(judge, x[i].to(dev), y[i].to(dev), gen).item() * len(i)
                       for i in va.split(256)) / len(va)
-        row = [ep + 1, tot / len(tr), val, round(time.time() - t0, 1)]
+        row = [ep + 1, tot / len(tr), val, round(time.time() - t0, 1)] + ([res / len(tr)] if physics_on else [])
         history.append(row)
         with hist_path.open("a", newline="") as f:
             csv.writer(f).writerow(row)
@@ -144,7 +182,8 @@ def train(spec: dict, ds: Dataset, out_dir: str | Path, progress: Callable[[floa
         if (best[1] == ep + 1) if objective.select_best else (ep + 1 == tr_cfg["epochs"]):
             judge.save(str(out / mdl.MODEL_FILE))
         progress((ep + 1) / tr_cfg["epochs"],
-                 f"epoch {ep + 1}/{tr_cfg['epochs']}  train {row[1]:.4g}  val {val:.4g}")
+                 f"epoch {ep + 1}/{tr_cfg['epochs']}  train {row[1]:.4g}  val {val:.4g}"
+                 + (f"  residual {row[4]:.4g}" if physics_on else ""))
     from .plots import loss_curve
 
     loss_name = LOSS_NAMES.get(kind, spec["loss"])

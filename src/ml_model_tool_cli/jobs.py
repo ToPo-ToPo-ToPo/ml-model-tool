@@ -167,6 +167,20 @@ def _headline(m: dict) -> list[str]:
                     f"volume error median {m['volume_error']['median']}")
     if "rel_l2" in m:
         rows.append(f"- relative L2 median {m['rel_l2']['median']}  p90 {m['rel_l2']['p90']}")
+    for c, v in (m.get("rel_l2_by_channel") or {}).items():
+        rows.append(f"  - {c}: relative L2 median {v['median']}  p90 {v['p90']}")
+    for c, v in (m.get("derived_rel_l2") or {}).items():
+        rows.append(f"  - {c} (from the predicted displacement): relative L2 median {v['median']}  p90 {v['p90']}")
+    if "peak_stress_error" in m:
+        v = m["peak_stress_error"]
+        rows.append(f"- peak von Mises stress error (relative): median {v['median']}  p90 {v['p90']}")
+    if "compliance_error" in m:
+        v = m["compliance_error"]
+        rows.append(f"- compliance from the predicted energies, error (relative): median {v['median']}  p90 {v['p90']}")
+    if "equilibrium_residual" in m:
+        v = m["equilibrium_residual"]
+        rows.append(f"- equilibrium residual ||K u - F|| / ||F||: median {v['median']}  p90 {v['p90']} "
+                    "(0 for the FEM solution)")
     if "compliance_ratio" in m:
         c = m["compliance_ratio"]
         rows.append(f"- compliance / SIMP: median {c['median']}  <=1.05 {c['share_le_1.05']:.0%}  "
@@ -223,7 +237,8 @@ def run_evaluate(model: str, data: str, split: str, out: str, samples: int = 0, 
             f"split: {split} ({m['cases']} cases)",
             *_headline(m),
             "", figure])
-        keep = {k: m[k] for k in ("cases", "iou", "rel_l2", "compliance_ratio", "topodiff") if k in m}
+        keep = {k: m[k] for k in ("cases", "iou", "rel_l2", "compliance_ratio", "peak_stress_error",
+                                  "compliance_error", "equilibrium_residual", "topodiff") if k in m}
         if "floating" in m:
             keep["floating_share"] = m["floating"]["share"]
         summary = {"split": split, "model_type": bundle.kind,
