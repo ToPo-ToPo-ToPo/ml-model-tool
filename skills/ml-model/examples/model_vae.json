@@ -1,0 +1,5 @@
+{"model":  {"type": "vae", "model_channels": 64, "channel_mult": [1, 2, 2, 2], "num_blocks": 2,
+            "attn_levels": [2], "latent_dim": 32, "kl_weight": 0.01},
+ "inputs": ["volfrac", "fix_x", "fix_y", "load_x", "load_y", "sed"],
+ "train":  {"epochs": 200, "batch": 32, "lr": 0.0002, "ema": 0.999, "seed": 0},
+ "sample": {"samples": 4, "seed": 0}}

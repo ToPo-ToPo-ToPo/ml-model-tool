@@ -2,8 +2,8 @@
 # uv run で起動できる独立プロジェクト（規約 §4）。
 [project]
 name = "ml-model-tool"
-version = "0.1.0"
-description = "Make physics surrogate / generative models (PhysicsNeMo FNO) from JSON specs: data, train, evaluate, predict"
+version = "0.2.0"
+description = "Make physics generative models (diffusion, flow matching, VAE, GAN) and surrogates (PhysicsNeMo FNO) from JSON specs: data, train, evaluate, predict"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"

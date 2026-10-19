@@ -3,8 +3,8 @@ from this one declaration (agk.connect). People and brains type the same lines::
 
     data --spec data.json                                   make a dataset (SIMP / FEM / import)
     train --spec model.json --data jobs/<data job>          train a model on it
-    evaluate --model jobs/<train job> --data jobs/<data job> [--split test]
-    predict --model jobs/<train job> --data <dataset> [--split all]
+    evaluate --model jobs/<train job> --data jobs/<data job> [--split test] [--samples K] [--steps S]
+    predict --model jobs/<train job> --data <dataset> [--split all] [--samples K] [--steps S]
     help [<command>] / job list / job status --job-dir jobs/<…> / job stop --job-dir jobs/<…>
 
 How to write the two JSON documents is in the skill (skills/ml-model/SKILL.md) and docs/specs.md.
@@ -27,7 +27,7 @@ APP_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_SHAPE = By("source", {name: Obj(keys) for name, keys in specs.DATA_SHAPE_CASES.items()})
 MODEL_SHAPE = Obj({"model": Obj(specs.MODEL_SHAPE["model"]), "inputs": None, "loss": None,
-                   "train": Obj(specs.MODEL_SHAPE["train"])})
+                   "train": Obj(specs.MODEL_SHAPE["train"]), "sample": Obj(specs.MODEL_SHAPE["sample"])})
 
 
 def read_json(path: str | Path) -> dict:
@@ -78,9 +78,36 @@ def _check_train(call) -> None:
         raise InputError("data", tr("このデータセットには正解（y）が無い（評価専用。train には data ジョブの dataset.npz を渡す）",
                                     "this dataset has no targets (y) (evaluation only; pass dataset.npz of a data job to train)"))
     try:
-        specs.model_spec(read_json(call.args["spec"]), meta["x_channels"], meta["y_kind"])
+        spec = specs.model_spec(read_json(call.args["spec"]), meta["x_channels"], meta["y_kind"],
+                                grid=tuple(meta["shape"]["y"][2:]))
     except ValueError as exc:
         raise InputError("spec", str(exc)) from exc
+    if spec["train"]["physics"] and (meta.get("grid", {}).get("on") != "nodes" or "physics" not in meta):
+        raise InputError("spec", tr("train.physics は節点の変位を正解に持つデータだけ（simp-fea の target: \"displacement\"）",
+                                    "train.physics needs nodal displacements as targets (simp-fea with "
+                                    "target: \"displacement\")"))
+
+
+def _check_sampling(call) -> None:
+    """--samples / --steps: generative models only, within the model's limits."""
+    samples, steps = call.args.get("samples") or 0, call.args.get("steps") or 0
+    if not samples and not steps:
+        return
+    info = json.loads((Path(call.args["model"]) / "model.json").read_text(encoding="utf-8"))
+    kind = info["spec"]["model"].get("type", "fno")
+    if kind not in specs.GENERATIVE:
+        raise InputError("samples" if samples else "steps",
+                         tr(f"--samples / --steps は生成モデル（{' / '.join(specs.GENERATIVE)}）だけ（このモデルは {kind}）",
+                            f"--samples / --steps are for generative models ({' / '.join(specs.GENERATIVE)}) only "
+                            f"(this model is {kind})"))
+    if steps and "steps" not in info["spec"]["sample"]:
+        raise InputError("steps", tr(f"--steps は diffusion / flow だけ（{kind} は 1 回で案を作る）",
+                                     f"--steps is for diffusion / flow only ({kind} makes a design in one pass)"))
+    try:
+        specs.sample_spec({**info["spec"]["sample"], **({"samples": samples} if samples else {}),
+                           **({"steps": steps} if steps else {})}, kind, info["spec"]["model"].get("timesteps"))
+    except ValueError as exc:
+        raise InputError("samples" if "samples" in str(exc) else "steps", str(exc)) from exc
 
 
 def _artifacts(st: dict, job_dir: str, base: str) -> list[dict]:
@@ -147,21 +174,26 @@ dataset.json (channel names, shapes), preview.png (first samples) and summary.md
 )
 
 COMMANDS.add(
-    "train", help=("モデルを学習する", "train a model"),
+    "train", help=("モデルを学習する（FNO か生成モデル）", "train a model (FNO or a generative model)"),
     args=[Doc("spec", "ml-model-tool-model/1", shape=MODEL_SHAPE, stage="spec",
-              help=("モデル仕様（JSON）。model / inputs / loss / train。全部省略可（{} で既定）",
-                    "model spec (JSON): model / inputs / loss / train; all optional ({} = defaults)")),
+              help=("モデル仕様（JSON）。model（type: fno / diffusion / flow / vae / gan）/ inputs / loss / train / sample。"
+                    "全部省略可（{} で FNO の既定）",
+                    "model spec (JSON): model (type: fno / diffusion / flow / vae / gan) / inputs / loss / train / sample; "
+                    "all optional ({} = FNO defaults)")),
           File("data", resolve=_dataset_file, help=("data ジョブのフォルダか dataset.npz", "a data job folder or dataset.npz"))],
     check=_check_train,
-    description=("""データセットでモデル（PhysicsNeMo の FNO）を学習する（`mmt train`）。
+    description=("""データセットでモデルを学習する（`mmt train`）。
 
-inputs でデータの入力チャネルの一部だけを使える（入力の効果を 1 つずつ確かめる）。train.n_train で学習件数を絞れる。
-毎エポックの学習・検証の損失を history.csv と loss.png に残し、検証の損失が最小のエポックを model.mdlus に保存する。""",
-                 """Train a model (PhysicsNeMo FNO) on a dataset (`mmt train`).
+model.type: fno（PhysicsNeMo の FNO。1 条件に 1 つの答え）か、1 条件から何通りもの案を生成する生成モデル:
+diffusion（条件付き拡散モデル）・flow（Flow matching）・vae（条件付き VAE）・gan（条件付き GAN）。
+inputs でデータの入力チャネルの一部だけを使える（生成モデルでは生成の条件になる）。train.n_train で学習件数を絞れる。毎エポックの学習・検証の損失を
+history.csv と loss.png に残し、検証の損失が最小のエポックを model.mdlus に保存する。""",
+                 """Train a model on a dataset (`mmt train`).
 
-inputs selects a subset of the dataset's input channels (to test inputs one at a time); train.n_train limits the
-training samples. Train / validation losses of every epoch go to history.csv and loss.png; the epoch with the lowest
-validation loss is saved as model.mdlus."""),
+model.type: fno (PhysicsNeMo FNO; one answer per condition) or a generative model making many designs per
+condition: diffusion (conditional diffusion), flow (flow matching), vae (conditional VAE), gan (conditional GAN).
+inputs selects a subset of the dataset's input channels (the condition, for generative models); train.n_train limits the training samples. Train / validation losses of every epoch
+go to history.csv and loss.png; the epoch with the lowest validation loss is saved as model.mdlus."""),
 )
 
 COMMANDS.add(
@@ -170,16 +202,25 @@ COMMANDS.add(
           File("data", resolve=_dataset_file, help=("data ジョブのフォルダか dataset.npz / level_<k>.npz",
                                                      "a data job folder or dataset.npz / level_<k>.npz")),
           Value("split", str, "test", choices=("test", "val", "train"),
-                help=("評価する分け方（既定 test）", "which split to evaluate (default test)"))],
+                help=("評価する分け方（既定 test）", "which split to evaluate (default test)")),
+          Value("samples", int, 0, help=("生成モデルだけ: 1 条件あたりの案の数（0 = モデル仕様の sample.samples）",
+                                          "generative models only: designs per condition (0 = sample.samples of the model spec)")),
+          Value("steps", int, 0, help=("diffusion / flow だけ: 生成の段数（0 = モデル仕様の sample.steps）",
+                                        "diffusion / flow only: sampling steps (0 = sample.steps of the model spec)"))],
+    check=_check_sampling,
     description=("""学習済みモデルを予測させて正解と比べる（`mmt evaluate`）。
 
 密度: IoU・MAE・体積の誤差。場: 相対 L2 誤差。simp-topopt はさらに予測形状のコンプライアンスを FEM で解いて SIMP と比べる。
-TopoDiff のテスト（level_<k>.npz）は TopoDiff の評価コードで CE / VFE / LD / FM を出す。図は compare.png。""",
+TopoDiff のテスト（level_<k>.npz）は TopoDiff の評価コードで CE / VFE / LD / FM を出す。図は compare.png。
+生成モデルは 1 条件から K 案を作り、上の数値は 1 案目で出す（FNO と比べられる）。加えて K 案の違い（diversity）と
+K 案の中で最も良い案の数値（best_of_k。topopt は FEM のコンプライアンスで選ぶ）を出す。""",
                  """Predict with a trained model and compare with the truth (`mmt evaluate`).
 
 Density: IoU, MAE, volume error. Fields: relative L2 error. simp-topopt also solves the predicted design by FEM and
 compares its compliance with SIMP. TopoDiff test levels (level_<k>.npz) get CE / VFE / LD / FM with TopoDiff's
-analysis. Figure: compare.png."""),
+analysis. Figure: compare.png. A generative model makes K designs per condition; the numbers above are of the first
+design (comparable with an FNO), plus the diversity of the K designs and best-of-K numbers (topopt picks by FEM
+compliance)."""),
 )
 
 COMMANDS.add(
@@ -187,9 +228,15 @@ COMMANDS.add(
     args=[File("model", resolve=_model_folder, help=("train ジョブのフォルダ", "a train job folder")),
           File("data", resolve=_dataset_file, help=("入力を持つデータセット", "a dataset with the inputs")),
           Value("split", str, "all", choices=("all", "test", "val", "train"),
-                help=("予測する分け方（既定 all）", "which split to predict (default all)"))],
-    description=("predictions.npz（index と pred）と preview.png を書く（`mmt predict`）。",
-                 "Writes predictions.npz (index and pred) and preview.png (`mmt predict`)."),
+                help=("予測する分け方（既定 all）", "which split to predict (default all)")),
+          Value("samples", int, 0, help=("生成モデルだけ: 1 条件あたりの案の数（0 = モデル仕様の sample.samples）",
+                                          "generative models only: designs per condition (0 = sample.samples of the model spec)")),
+          Value("steps", int, 0, help=("diffusion / flow だけ: 生成の段数（0 = モデル仕様の sample.steps）",
+                                        "diffusion / flow only: sampling steps (0 = sample.steps of the model spec)"))],
+    check=_check_sampling,
+    description=("predictions.npz（index と pred。生成モデルは samples も）と preview.png を書く（`mmt predict`）。",
+                 "Writes predictions.npz (index and pred; samples too for a generative model) and preview.png "
+                 "(`mmt predict`)."),
 )
 
 COMMANDS.add_job_commands(schema=jobs.JOB_SCHEMA, jobspec_schema=jobs.JOBSPEC_SCHEMA)
@@ -202,7 +249,9 @@ def run(name: str, args: dict, out: Optional[str], base: str) -> dict:
     if name == "train":
         return jobs.run_train(read_json(args["spec"]), args["data"], out)
     if name == "evaluate":
-        return jobs.run_evaluate(args["model"], args["data"], args["split"], out)
+        return jobs.run_evaluate(args["model"], args["data"], args["split"], out, args.get("samples") or 0,
+                                 args.get("steps") or 0)
     if name == "predict":
-        return jobs.run_predict(args["model"], args["data"], args["split"], out)
+        return jobs.run_predict(args["model"], args["data"], args["split"], out, args.get("samples") or 0,
+                                args.get("steps") or 0)
     raise KeyError(name)

@@ -61,6 +61,28 @@ class FEM:
         ue = u[self.edof]
         return u, np.einsum("ij,jk,ik->i", ue, self.KE, ue)
 
+    def element_fields(self, xvec: np.ndarray, u: np.ndarray, ce: np.ndarray, nu: float = 0.3) -> dict:
+        """Element images of a solved design: ``ux`` / ``uy`` (mean of the 4 corner nodes; y up), ``von_mises``
+        (plane stress at the element centre, with the element's stiffness E(x)) and ``energy`` (E(x) u_e^T KE u_e,
+        the element's share of the compliance: the energies add up to the compliance F^T u)."""
+        ue = u[self.edof]                                    # (nel, 8): LL, LR, UR, UL nodes; x then y
+        E = self.stiffness(xvec)
+        dndx = np.array([-0.5, 0.5, 0.5, -0.5])              # shape-function derivatives at the centre
+        dndy = np.array([-0.5, -0.5, 0.5, 0.5])              # (unit square element)
+        ux, uy = ue[:, 0::2], ue[:, 1::2]
+        ex, ey = ux @ dndx, uy @ dndy
+        gxy = ux @ dndy + uy @ dndx
+        c = E / (1 - nu ** 2)
+        sx, sy, txy = c * (ex + nu * ey), c * (ey + nu * ex), c * (1 - nu) / 2 * gxy
+        vm = np.sqrt(np.maximum(sx ** 2 - sx * sy + sy ** 2 + 3 * txy ** 2, 0))
+        return {"ux": self.vec_to_img(ux.mean(1)), "uy": self.vec_to_img(uy.mean(1)),
+                "von_mises": self.vec_to_img(vm), "energy": self.vec_to_img(E * ce)}
+
+    def fields_from_displacement(self, xvec: np.ndarray, u: np.ndarray) -> dict:
+        """``element_fields`` for any displacement (e.g. a predicted one), not only the FEM solution."""
+        ue = u[self.edof]
+        return self.element_fields(xvec, u, np.einsum("ij,jk,ik->i", ue, self.KE, ue))
+
     def compliance(self, img: np.ndarray, F: np.ndarray, fixed: np.ndarray) -> float:
         xvec = self.img_to_vec(img).astype(float)
         _, ce = self.solve(xvec, F, fixed)
@@ -79,6 +101,13 @@ def node_masks_to_dofs(fix: np.ndarray, load: np.ndarray):
 def dofs_to_node_image(u: np.ndarray, nelx: int, nely: int) -> np.ndarray:
     """Dof vector -> ``(2, nely+1, nelx+1)`` node image (x and y components)."""
     return np.stack([u[0::2].reshape(nelx + 1, nely + 1).T, u[1::2].reshape(nelx + 1, nely + 1).T])
+
+
+def node_image_to_dofs(img: np.ndarray) -> np.ndarray:
+    """``(2, nely+1, nelx+1)`` node image -> dof vector (the inverse of ``dofs_to_node_image``)."""
+    u = np.zeros(2 * img.shape[1] * img.shape[2])
+    u[0::2], u[1::2] = np.asarray(img[0]).T.reshape(-1), np.asarray(img[1]).T.reshape(-1)
+    return u
 
 
 def density_filter(nelx: int, nely: int, rmin: float):
