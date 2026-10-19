@@ -1,13 +1,15 @@
 """The commands of ``mmt`` — the window's input box, the CLI and the MCP tool ``run`` are all built
 from this one declaration (agk.connect). People and brains type the same lines::
 
+    spec data [--source S] / spec model [--type T]          the keys of the two JSON documents, with examples
     data --spec data.json                                   make a dataset (SIMP / FEM / import)
     train --spec model.json --data jobs/<data job>          train a model on it
     evaluate --model jobs/<train job> --data jobs/<data job> [--split test] [--samples K] [--steps S]
     predict --model jobs/<train job> --data <dataset> [--split all] [--samples K] [--steps S]
     help [<command>] / job list / job status --job-dir jobs/<…> / job stop --job-dir jobs/<…>
 
-How to write the two JSON documents is in the skill (skills/ml-model/SKILL.md) and docs/specs.md.
+How to write the two JSON documents: ``spec data`` / ``spec model`` (made from the key table, ``keys.py``),
+the skill (skills/ml-model/SKILL.md) and docs/specs.md.
 """
 from __future__ import annotations
 
@@ -15,10 +17,10 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from agk.connect import By, Commands, Doc, File, Obj, Value, rejected, tr
-from agk.connect import InputError
+from agk.connect import By, CommandError, Commands, Doc, File, Obj, Value, rejected, tr
 
 from ml_model_tool import spec as specs
+from ml_model_tool.keys import SpecError
 from ml_model_tool.sources import SOURCES
 from ml_model_tool_cli import jobs
 
@@ -34,9 +36,9 @@ def read_json(path: str | Path) -> dict:
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise InputError("spec", tr(f"JSON として読めない: {exc}", f"cannot read as JSON: {exc}")) from exc
+        raise CommandError("spec", tr(f"JSON として読めない: {exc}", f"cannot read as JSON: {exc}"), where="spec") from exc
     if not isinstance(doc, dict):
-        raise InputError("spec", tr("JSON オブジェクト（{...}）で書く", "write a JSON object ({...})"))
+        raise CommandError("spec", tr("JSON オブジェクト（{...}）で書く", "write a JSON object ({...})"), where="spec")
     return doc
 
 
@@ -49,11 +51,16 @@ def load_data_spec(path: str | Path) -> dict:
     return doc
 
 
+def _rejected(exc: SpecError) -> CommandError:
+    """A wrong spec value, as the brain gets it: the key (``where``), what is wrong and what to write."""
+    return CommandError("spec", str(exc), where=exc.where, expected=exc.expected)
+
+
 def _check_data_spec(path: Path) -> None:
     try:
         specs.data_spec(load_data_spec(path))
-    except ValueError as exc:
-        raise InputError("spec", str(exc)) from exc
+    except SpecError as exc:
+        raise _rejected(exc) from exc
 
 
 def _dataset_file(p: Path) -> Path:
@@ -75,17 +82,18 @@ def _model_folder(p: Path) -> Path:
 def _check_train(call) -> None:
     meta = json.loads(Path(call.args["data"]).with_suffix(".json").read_text(encoding="utf-8"))
     if "y" not in (meta.get("shape") or {}) or not (meta.get("shape") or {}).get("y"):
-        raise InputError("data", tr("このデータセットには正解（y）が無い（評価専用。train には data ジョブの dataset.npz を渡す）",
-                                    "this dataset has no targets (y) (evaluation only; pass dataset.npz of a data job to train)"))
+        raise CommandError("input", tr("このデータセットには正解（y）が無い（評価専用。train には data ジョブの dataset.npz を渡す）",
+                                       "this dataset has no targets (y) (evaluation only; pass dataset.npz of a data job to train)"),
+                           where="data")
     try:
         spec = specs.model_spec(read_json(call.args["spec"]), meta["x_channels"], meta["y_kind"],
                                 grid=tuple(meta["shape"]["y"][2:]))
-    except ValueError as exc:
-        raise InputError("spec", str(exc)) from exc
+    except SpecError as exc:
+        raise _rejected(exc) from exc
     if spec["train"]["physics"] and (meta.get("grid", {}).get("on") != "nodes" or "physics" not in meta):
-        raise InputError("spec", tr("train.physics は節点の変位を正解に持つデータだけ（simp-fea の target: \"displacement\"）",
-                                    "train.physics needs nodal displacements as targets (simp-fea with "
-                                    "target: \"displacement\")"))
+        raise CommandError("spec", tr("節点の変位を正解に持つデータだけ（simp-fea の target: \"displacement\"）",
+                                      "needs nodal displacements as targets (simp-fea with target: \"displacement\")"),
+                           where="train.physics")
 
 
 def _check_sampling(call) -> None:
@@ -96,18 +104,19 @@ def _check_sampling(call) -> None:
     info = json.loads((Path(call.args["model"]) / "model.json").read_text(encoding="utf-8"))
     kind = info["spec"]["model"].get("type", "fno")
     if kind not in specs.GENERATIVE:
-        raise InputError("samples" if samples else "steps",
-                         tr(f"--samples / --steps は生成モデル（{' / '.join(specs.GENERATIVE)}）だけ（このモデルは {kind}）",
-                            f"--samples / --steps are for generative models ({' / '.join(specs.GENERATIVE)}) only "
-                            f"(this model is {kind})"))
+        gen = " / ".join(specs.GENERATIVE)
+        raise CommandError("input", tr(f"--samples / --steps は生成モデル（{gen}）だけ（このモデルは {kind}）",
+                                       f"--samples / --steps are for generative models ({gen}) only (this model is {kind})"),
+                           where="samples" if samples else "steps")
     if steps and "steps" not in info["spec"]["sample"]:
-        raise InputError("steps", tr(f"--steps は diffusion / flow だけ（{kind} は 1 回で案を作る）",
-                                     f"--steps is for diffusion / flow only ({kind} makes a design in one pass)"))
+        raise CommandError("input", tr(f"--steps は diffusion / flow だけ（{kind} は 1 回で案を作る）",
+                                       f"--steps is for diffusion / flow only ({kind} makes a design in one pass)"), where="steps")
     try:
         specs.sample_spec({**info["spec"]["sample"], **({"samples": samples} if samples else {}),
                            **({"steps": steps} if steps else {})}, kind, info["spec"]["model"].get("timesteps"))
-    except ValueError as exc:
-        raise InputError("samples" if "samples" in str(exc) else "steps", str(exc)) from exc
+    except SpecError as exc:
+        raise CommandError("input", str(exc), where="samples" if "samples" in exc.where else "steps",
+                           expected=exc.expected) from exc
 
 
 def _artifacts(st: dict, job_dir: str, base: str) -> list[dict]:
@@ -158,6 +167,50 @@ def _finish(result: dict, call, options: dict) -> dict:
 
 COMMANDS = Commands(prog="mmt", app=APP, module="ml_model_tool_cli.cli", root=APP_ROOT, finish=_finish)
 
+def _spec_data(call, base: str) -> dict:
+    try:
+        return {"ok": True, **specs.describe_data(call.args.get("source") or "")}
+    except SpecError as exc:
+        raise _rejected(exc) from exc
+
+
+def _spec_model(call, base: str) -> dict:
+    try:
+        return {"ok": True, **specs.describe_model(call.args.get("type") or "")}
+    except SpecError as exc:
+        raise _rejected(exc) from exc
+
+
+COMMANDS.add(
+    "spec data", help=("データ仕様の鍵・既定値・値の範囲・意味と、そのまま書ける例", "keys, defaults, values and meaning of the data spec, with an example"),
+    args=[Value("source", str, "", help=("source の名前（省略で一覧）", "source name (omit for the list)"))],
+    local=_spec_data,
+    description=("""データ仕様（`data --spec` に渡す JSON）の書き方をその場で返す（`mmt spec data`）。
+
+`spec data` は source の一覧（何のデータか・入力と出力のチャネル）。`spec data --source simp-topopt` はその source の
+鍵ごとの既定値・値の範囲・意味と、全部の鍵を既定値で埋めた例（example）。例をファイルに書き、変えたいキーだけ直す。""",
+                 """Answers how to write the data spec (the JSON for `data --spec`) right away (`mmt spec data`).
+
+`spec data` lists the sources (what the data is, input and output channels). `spec data --source simp-topopt` gives
+every key's default, values and meaning, and an example with every key at its default: write it to a file and
+change only what you need."""),
+)
+
+COMMANDS.add(
+    "spec model", help=("モデル仕様の鍵・既定値・値の範囲・意味と、そのまま書ける例", "keys, defaults, values and meaning of the model spec, with an example"),
+    args=[Value("type", str, "", help=("model.type（省略で種類の一覧）", "model.type (omit for the list of types)"))],
+    local=_spec_model,
+    description=("""モデル仕様（`train --spec` に渡す JSON）の書き方をその場で返す（`mmt spec model`）。
+
+`spec model` はモデルの種類の一覧と最上段の鍵（model / inputs / loss / train / sample）。`spec model --type flow` は
+その種類の model・train・sample の鍵（既定値・値の範囲・意味）と例。train の既定は種類で違う（生成モデルは 200 エポックなど）。""",
+                 """Answers how to write the model spec (the JSON for `train --spec`) right away (`mmt spec model`).
+
+`spec model` lists the model types and the top-level keys (model / inputs / loss / train / sample).
+`spec model --type flow` gives that type's model, train and sample keys (default, values, meaning) and an example.
+Training defaults differ by type (200 epochs for generative models, ...)."""),
+)
+
 COMMANDS.add(
     "data", help=("データセットを作る（SIMP・FEM で生成、または取り込み）", "make a dataset (generate by SIMP / FEM, or import)"),
     args=[Doc("spec", "ml-model-tool-data/1", validate=_check_data_spec, shape=DATA_SHAPE, stage="spec",
@@ -165,11 +218,11 @@ COMMANDS.add(
                     "data spec (JSON): source (simp-topopt / fea-elastic / topodiff) and its keys"))],
     description=("""学習用のデータセットをジョブフォルダに作る（`mmt data`）。
 
-source ごとの鍵と既定値は docs/specs.md と手順書 ml-model。出力は dataset.npz（x / y / split / aux_*）と
+source ごとの鍵と既定値は `spec data --source <source>`。出力は dataset.npz（x / y / split / aux_*）と
 dataset.json（チャネル名・形）、preview.png（先頭の見本）、summary.md。SIMP は 1 件数秒かかる（600 件で数十分）。""",
                  """Make a training dataset in a job folder (`mmt data`).
 
-Keys and defaults per source are in docs/specs.md and the skill ml-model. Writes dataset.npz (x / y / split / aux_*),
+Keys and defaults per source: `spec data --source <source>`. Writes dataset.npz (x / y / split / aux_*),
 dataset.json (channel names, shapes), preview.png (first samples) and summary.md. SIMP takes seconds per sample."""),
 )
 

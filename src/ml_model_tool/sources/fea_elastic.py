@@ -14,21 +14,31 @@ from __future__ import annotations
 import numpy as np
 
 from .. import dataset
-from ..fem import FEM, dofs_to_node_image, node_masks_to_dofs
+from agk.lang import tr
 
-SHAPE = ["source", "n", "size", "material", "min_support_distance", "n_test", "n_val", "seed"]
-DEFAULTS = {"n": 2060, "size": 64, "material": "full", "min_support_distance": 16,
-            "n_test": 60, "n_val": 40, "seed": 0}
+from ..fem import FEM, dofs_to_node_image, node_masks_to_dofs
+from ..keys import Choice, Int, Key, SpecError
+from .common import n_key, split_keys
+
+ABOUT = ("正方形の全面材料の線形弾性。拘束 2 本・荷重 1 本の配置 → 変位",
+         "linear elasticity on a solid square: two line supports and one line load -> displacement")
+KEYS = [n_key(2060, ("件数（1 件 FEM 1 回）", "samples (one FEM solve each)")),
+        Key("size", 64, Int(8, 256), ("正方形の一辺の要素数", "elements along each side of the square")),
+        Key("material", "full", Choice(("full",)), ("材料の領域（いまは全面だけ）", "where the material is (only the whole square for now)")),
+        Key("min_support_distance", 16, Int(2, 256),
+            ("2 本の線拘束の最小間隔（要素数。size 以下）。近いとほぼ自由に回転して変位が極端になる",
+             "minimum distance between the two line supports (elements, at most size); close supports leave an "
+             "almost free rotation")),
+        *split_keys(60, 40)]
 X_CHANNELS = ["material", "fix_x", "fix_y", "load_x", "load_y"]
+Y_CHANNELS = ["ux", "uy"]
 
 
 def check(spec: dict) -> None:
-    if not 8 <= spec["size"] <= 256:
-        raise ValueError("size must be between 8 and 256")
-    if spec["material"] != "full":
-        raise ValueError('material: only "full" (the whole square) is available for now')
-    if not 2 <= spec["min_support_distance"] <= spec["size"]:
-        raise ValueError("min_support_distance must be between 2 and size")
+    if spec["min_support_distance"] > spec["size"]:
+        raise SpecError("min_support_distance", tr(
+            f"{spec['min_support_distance']} は size（{spec['size']}）を超えている。size 以下にする",
+            f"{spec['min_support_distance']} is larger than size ({spec['size']}); make it at most size"))
 
 
 def _line(rng, nn: int):
@@ -78,7 +88,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
             progress((i + 1) / n, f"FEM {i + 1}/{n}")
     y = np.stack(ys)
     split = dataset.make_split(n, spec["n_test"], spec["n_val"], spec["seed"])
-    meta = {"source": "fea-elastic", "task": "fea", "x_channels": X_CHANNELS, "y_channels": ["ux", "uy"],
+    meta = {"source": "fea-elastic", "task": "fea", "x_channels": X_CHANNELS, "y_channels": Y_CHANNELS,
             "y_kind": "field", "grid": {"nelx": size, "nely": size, "on": "nodes"}, "params": spec}
     dataset.save(out_dir, np.stack(xs), y, split, meta)
     umax = np.abs(y).reshape(n, -1).max(1)
