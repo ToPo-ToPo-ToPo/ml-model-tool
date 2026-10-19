@@ -1,8 +1,10 @@
 """The ml-model-tool window (agk). One input box; people and brains type the same command lines.
 
+    spec data [--source S] / spec model [--type T]
     data --spec data.json
     train --spec model.json --data jobs/<data job>
     evaluate --model jobs/<train job> --data jobs/<data job>
+    compare --evals jobs/<evaluate job>,jobs/<evaluate job>
     predict --model jobs/<train job> --data <dataset>
     help / job list / job status --job-dir jobs/<…> / job stop --job-dir jobs/<…>
 
@@ -32,7 +34,7 @@ from ml_model_tool_cli.declare import APP, COMMANDS  # noqa: E402
 
 WORK_DIR = (ROOT / "workspace").resolve()
 _WORK: dict = {"base": None}
-_FIGURES = ("compare", "loss_plot", "preview")
+_FIGURES = ("compare", "loss_plot", "preview")      # compare.png of evaluate and of compare
 _NOTE = ("この窓はコマンド行だけを受け付けます（例: `help`、`data --spec data.json`）。"
          "文章で頼むときは会社の OS の頭脳に話しかけてください。")
 
@@ -48,7 +50,39 @@ def _set_work_base(path) -> Path:
     return base
 
 
+def _cell(v) -> str:
+    return (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)).replace("|", "\\|")
+
+
+def _spec_text(res: dict) -> str:
+    """``spec data`` / ``spec model`` as tables (the brain gets the same answer as JSON)."""
+    out = [f"**{res.get('document', '')}**" + (f" — `{res['source']}`" if "source" in res else "")
+           + (f" — `{res['type']}`" if "type" in res else "")]
+    if res.get("about"):
+        out.append(res["about"])
+    if "sources" in res:
+        out += ["", "| source | 内容 | 入力 → 出力 |", "|---|---|---|"]
+        out += [f"| `{s['source']}` | {s['about']} | {', '.join(s['x_channels'])} → {', '.join(s['y_channels'])} |"
+                for s in res["sources"]]
+    if "types" in res:
+        out += ["", "| type | 内容 |", "|---|---|"] + [f"| `{t['type']}` | {t['about']} |" for t in res["types"]]
+    for sec in ("keys", "spec", "model", "train", "sample"):
+        rows = res.get(sec)
+        if isinstance(rows, list) and rows and "key" in rows[0]:
+            out += ["", f"`{sec}`", ""] if sec != "keys" else [""]
+            out += ["| キー | 既定 | 値 | 意味 |", "|---|---|---|---|"]
+            out += [f"| `{r['key']}` | {'（必須）' if r.get('required') else _cell(r.get('default'))} | {r['values']} | "
+                    f"{r['meaning']} |" for r in rows]
+    if "example" in res:
+        out += ["", "```json", json.dumps(res["example"], ensure_ascii=False, indent=1), "```"]
+    if res.get("next"):
+        out += ["", str(res["next"])]
+    return "\n".join(x for x in out if x is not None)
+
+
 def _local_text(name: str, res: dict) -> str:
+    if name.startswith("spec "):
+        return _spec_text(res)
     if name == "job list":
         rows = res.get("jobs") or []
         if not rows:
@@ -89,7 +123,8 @@ def _command(ctx: AgkContext, call, options: dict) -> bool:
         res = COMMANDS.answer(resolved, str(base))
         ctx.job_result.update(res)
         if res.get("state") == "rejected":
-            ctx.emit.error(str((res.get("error") or {}).get("message")))
+            err = res.get("error") or {}
+            ctx.emit.error(str(err.get("message")) + (f"\n\n{err['expected']}" if err.get("expected") else ""))
             return True
         ctx.emit.text(_local_text(call.name, res))
         return False
