@@ -22,7 +22,8 @@ The design is used as SIMP leaves it (densities in [0, 1], E = Emin + x^3 (1 - E
     y  ux, uy at the nodes (y up)
     The equilibrium K(rho) u = F can then be checked on a prediction (``physics.py``; ``train.physics``
     adds it to the loss), and stress, energy and compliance follow from the predicted displacement.
-aux: fix, load (node images), compliance, design (the index of the design), density (the element image)
+aux: fix, load (node images), compliance, design (the index of the design), density (the element image);
+     support, load_kind (0 = the optimized load, 1 = a new one) — to break results down by (``groups``)
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ import numpy as np
 from .. import dataset
 from ..fem import FEM, density_filter, dofs_to_node_image, node_masks_to_dofs, simp
 from ..keys import Int, Key
-from .common import n_key, simp_keys, split_keys, target_key
+from .common import SUPPORTS, n_key, simp_keys, split_keys, target_key
 from .simp_topopt import _node_to_element, features, random_case
 
 ABOUT = ("SIMP で最適化した形状の FEM 結果（FEM のサロゲート）。形状・拘束・荷重 → 変位・応力・ひずみエネルギー",
@@ -136,11 +137,13 @@ def generate(spec: dict, out_dir, progress) -> dict:
     meta = {"source": "simp-fea", "task": "fea", "x_channels": X_CHANNELS,
             "y_channels": ["ux", "uy"] if nodal else Y_CHANNELS, "y_kind": "field",
             "grid": {"nelx": spec["nelx"], "nely": spec["nely"], "on": "nodes" if nodal else "elements"},
-            "physics": PHYSICS, "params": spec}
+            "physics": PHYSICS, "groups": {"support": list(SUPPORTS), "load_kind": ["optimized", "new"]}, "params": spec}
     dataset.save(out_dir, np.stack(xs), np.stack(ys), split, meta,
                  aux={"fix": np.stack(fixes).astype(np.float32), "load": np.stack(loads).astype(np.float32),
                       "compliance": np.asarray(comps, np.float64), "design": np.asarray(designs, np.int32),
-                      "density": np.stack(rhos).astype(np.float32)})
+                      "density": np.stack(rhos).astype(np.float32),
+                      "support": np.repeat([SUPPORTS.index(k) for k in kinds], L).astype(np.int8),
+                      "load_kind": np.tile((np.arange(L) > 0).astype(np.int8), n)})
     c = np.asarray(comps)
     return {"samples": n * L, "designs": n, "load_cases": L, "grid": f"{spec['nelx']}x{spec['nely']}",
             "compliance_median": round(float(np.median(c)), 3), "compliance_p90": round(float(np.percentile(c, 90)), 3),

@@ -160,64 +160,6 @@ def run_train(spec_doc: dict, data: str, out: str) -> dict:
     return _guard(job, body)
 
 
-def _headline(m: dict) -> list[str]:
-    rows = []
-    if "iou" in m:
-        rows.append(f"- IoU median {m['iou']['median']}  MAE median {m['mae']['median']}  "
-                    f"volume error median {m['volume_error']['median']}")
-    if "rel_l2" in m:
-        rows.append(f"- relative L2 median {m['rel_l2']['median']}  p90 {m['rel_l2']['p90']}")
-    for c, v in (m.get("rel_l2_by_channel") or {}).items():
-        rows.append(f"  - {c}: relative L2 median {v['median']}  p90 {v['p90']}")
-    for c, v in (m.get("derived_rel_l2") or {}).items():
-        rows.append(f"  - {c} (from the predicted displacement): relative L2 median {v['median']}  p90 {v['p90']}")
-    if "peak_stress_error" in m:
-        v = m["peak_stress_error"]
-        rows.append(f"- peak von Mises stress error (relative): median {v['median']}  p90 {v['p90']}")
-    if "compliance_error" in m:
-        v = m["compliance_error"]
-        rows.append(f"- compliance from the predicted energies, error (relative): median {v['median']}  p90 {v['p90']}")
-    if "equilibrium_residual" in m:
-        v = m["equilibrium_residual"]
-        rows.append(f"- equilibrium residual ||K u - F|| / ||F||: median {v['median']}  p90 {v['p90']} "
-                    "(0 for the FEM solution)")
-    if "compliance_ratio" in m:
-        c = m["compliance_ratio"]
-        rows.append(f"- compliance / SIMP: median {c['median']}  <=1.05 {c['share_le_1.05']:.0%}  "
-                    f">2 {c['share_gt_2']:.0%}  worst {c['max']}")
-    if "floating" in m:
-        f = m["floating"]
-        rows.append(f"- floating material: {f['share']:.0%} of designs (more than 1% of the material: "
-                    f"{f['share_gt_1pct']:.0%})  mean share of the material {f['volume_mean']}")
-    if "topodiff" in m:
-        t = m["topodiff"]
-        rows.append(f"- TopoDiff metrics: CE mean {t['CE_mean']:.2%} median {t['CE_median']:.2%}  "
-                    f"VFE {t['VFE_mean']:.2%}  LD {t['LD_share']:.1%}  FM {t['FM_share']:.1%}")
-    g = m.get("generative")
-    if g:
-        steps = f", {g['steps']} steps" if "steps" in g else ""
-        rows.insert(0, f"- generative: {g['samples']} designs per condition{steps}; "
-                       "the next lines are of sample 1 (one draw, comparable with an FNO)")
-        if "diversity" in g:
-            rows.append(f"- diversity (mean over pairs): median {g['diversity']['median']}")
-        b = g.get("best_of_k") or {}
-        if "iou" in b:
-            rows.append(f"- best of {g['samples']}: IoU median {b['iou']['median']}")
-        if "rel_l2" in b:
-            rows.append(f"- best of {g['samples']}: relative L2 median {b['rel_l2']['median']}")
-        if "compliance_ratio" in b:
-            c = b["compliance_ratio"]
-            rows.append(f"- best of {g['samples']} by FEM: compliance / SIMP median {c['median']}  "
-                        f"<=1.05 {c['share_le_1.05']:.0%}  >2 {c['share_gt_2']:.0%}")
-        if "floating_all" in g:
-            f = g["floating_all"]
-            rows.append(f"- all {g['samples']} designs: floating material {f['share']:.0%} "
-                        f"(more than 1% of the material: {f['share_gt_1pct']:.0%})")
-        if "CE_mean" in b:
-            rows.append(f"- best of {g['samples']}: CE mean {b['CE_mean']:.2%} median {b['CE_median']:.2%}")
-    return rows
-
-
 def run_evaluate(model: str, data: str, split: str, out: str, samples: int = 0, steps: int = 0) -> dict:
     from ml_model_tool import dataset, evaluation
     from ml_model_tool.model import Bundle
@@ -235,24 +177,14 @@ def run_evaluate(model: str, data: str, split: str, out: str, samples: int = 0, 
         _write_summary(job.out, tr("評価", "Evaluation"), [
             f"- model: `{_rel(bundle.folder, job.out)}` ({bundle.kind})  data: `{_rel(ds.path, job.out)}`  "
             f"split: {split} ({m['cases']} cases)",
-            *_headline(m),
-            "", figure])
-        keep = {k: m[k] for k in ("cases", "iou", "rel_l2", "compliance_ratio", "peak_stress_error",
-                                  "compliance_error", "equilibrium_residual", "topodiff") if k in m}
-        if "floating" in m:
-            keep["floating_share"] = m["floating"]["share"]
+            *evaluation.headline(m),
+            "", figure, tr("件ごとの数値: cases.csv。ほかの評価と並べるには compare --evals <評価ジョブ>,<評価ジョブ>",
+                           "Per-case numbers: cases.csv. To put evaluations side by side: compare --evals <eval job>,<eval job>")])
         summary = {"split": split, "model_type": bundle.kind,
-                   **{k: (v["median"] if isinstance(v, dict) and "median" in v else v) for k, v in keep.items()}}
-        g = m.get("generative") or {}
-        if g:
-            summary["samples"] = g["samples"]
-            if "diversity" in g:
-                summary["diversity"] = g["diversity"]["median"]
-            summary.update({f"best_of_k_{k}": v["median"] for k, v in (g.get("best_of_k") or {}).items()
-                            if isinstance(v, dict) and "median" in v})
+                   **{k: v for k, v in evaluation.key_numbers(m).items() if v is not None}}
         return job.done(summary,
                         {"summary": "summary.md", "metrics": "metrics.json", "compare": "compare.png",
-                         "predictions": "predictions.npz"})
+                         "cases": "cases.csv", "predictions": "predictions.npz"})
 
     return _guard(job, body)
 
@@ -299,5 +231,37 @@ def run_predict(model: str, data: str, split: str, out: str, samples: int = 0, s
         return job.done({"cases": int(len(idx)), "model_type": bundle.kind,
                          **({"samples": bundle.sampling(samples, steps)["samples"]} if bundle.generative else {})},
                         {"predictions": "predictions.npz", "preview": "preview.png", "summary": "summary.md"})
+
+    return _guard(job, body)
+
+
+def run_compare(evals: str, base: str, out: str, names: list | None = None, by: str = "", channel: str = "") -> dict:
+    """``evals``: evaluate job folders separated by commas, relative to the work folder ``base``."""
+    from ml_model_tool import compare
+
+    job = Job(out, "compare")
+
+    def body() -> dict:
+        folders = compare.parse_evals(evals, Path(base))
+        job.progress(0.1, f"comparing {len(folders)} evaluations")
+        doc = compare.compare(folders, job.out, names, by, channel)
+        names_ = [r["name"] for r in doc["runs"]]
+        lines = [f"- {r['name']}: `{_rel(r['evaluation'], job.out)}`" for r in doc["runs"]]
+        lines += [f"- warning: {w}" for w in doc["warnings"]]
+        lines += ["", tr("↓ は小さいほど良い、↑ は大きいほど良い。太字が行の最良。",
+                         "↓ lower is better, ↑ higher is better; bold is the best of the row."), "", doc["markdown"], ""]
+        if doc.get("figure_channel"):
+            lines.append(tr(f"図: compare.png（同じ件を並べる。{doc['figure_channel']}、各モデルの 1 案目）。",
+                            f"Figure: compare.png (the same cases side by side; {doc['figure_channel']}, sample 1 of each model)."))
+        if doc["groups"] and not by:
+            lines.append(tr(f"内訳: --by {' / '.join(doc['groups'])}", f"Breakdown: --by {' / '.join(doc['groups'])}"))
+        _write_summary(job.out, tr("比較", "Comparison"), lines)
+        summary = {"names": names_, "best": doc["best"], "table": doc["table"]}
+        if doc["warnings"]:
+            summary["warnings"] = doc["warnings"]
+        if doc["groups"]:
+            summary["groups"] = doc["groups"]
+        return job.done(summary, {"summary": "summary.md", "table": "compare.md", "metrics": "compare.json",
+                                  "csv": "compare.csv", "compare": "compare.png"})
 
     return _guard(job, body)

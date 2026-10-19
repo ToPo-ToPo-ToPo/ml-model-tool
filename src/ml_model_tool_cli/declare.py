@@ -6,6 +6,7 @@ from this one declaration (agk.connect). People and brains type the same lines::
     train --spec model.json --data jobs/<data job>          train a model on it
     evaluate --model jobs/<train job> --data jobs/<data job> [--split test] [--samples K] [--steps S]
     predict --model jobs/<train job> --data <dataset> [--split all] [--samples K] [--steps S]
+    compare --evals jobs/<evaluate job>,jobs/<evaluate job>[,…] [--names a,b] [--by <group>] [--channel <c>]
     help [<command>] / job list / job status --job-dir jobs/<…> / job stop --job-dir jobs/<…>
 
 How to write the two JSON documents: ``spec data`` / ``spec model`` (made from the key table, ``keys.py``),
@@ -124,6 +125,8 @@ def _artifacts(st: dict, job_dir: str, base: str) -> list[dict]:
              "dataset": tr("データセット（train / evaluate の --data に渡す）", "dataset (pass to --data of train / evaluate)"),
              "model": tr("学習済みモデル（このフォルダを --model に渡す）", "trained model (pass this folder to --model)"),
              "compare": tr("正解と予測の比較図", "truth vs prediction figure"),
+             "cases": tr("件ごとの数値（CSV）", "per-case numbers (CSV)"),
+             "table": tr("比較表（Markdown）", "comparison table (Markdown)"),
              "loss_plot": tr("損失の推移", "loss history"), "preview": tr("見本の図", "preview figure"),
              "metrics": tr("主要数値", "key numbers")}
     out = []
@@ -292,6 +295,47 @@ COMMANDS.add(
                  "(`mmt predict`)."),
 )
 
+def _check_compare(call) -> None:
+    from ml_model_tool.compare import parse_evals
+
+    root = Path(call.root) if call.root else None
+    if root is not None and root != Path(root.anchor):      # a brain's line: paths in its work folder
+        try:
+            folders = parse_evals(call.args["evals"], root)
+        except ValueError as exc:
+            raise CommandError("input", f"--evals: {exc}", where="evals") from exc
+        outside = [str(p) for p in folders if root not in p.parents]
+        if outside:
+            raise CommandError("input", tr(f"--evals: 作業場の外: {', '.join(outside)}",
+                                           f"--evals: outside the working folder: {', '.join(outside)}"), where="evals")
+    names = [n.strip() for n in (call.args.get("names") or "").split(",") if n.strip()]
+    if names and len(names) != len([v for v in call.args["evals"].split(",") if v.strip()]):
+        raise CommandError("input", tr("--names は --evals と同じ数だけ", "--names needs one name per evaluation"),
+                           where="names")
+
+
+COMMANDS.add(
+    "compare", help=("評価を並べて比べる（表・内訳・同じ件の図）", "put evaluations side by side (table, breakdown, figure)"),
+    args=[Value("evals", str, required=True, help=("evaluate ジョブのフォルダ 2〜8 個（カンマ区切り）",
+                                                   "2-8 evaluate job folders, separated by commas")),
+          Value("names", str, "", help=("列の名前（カンマ区切り。省略でモデルの種類）", "column names, separated by commas (default: model types)")),
+          Value("by", str, "", help=("内訳を出す件の分類（例: support・load_kind。使えるものは結果の groups）",
+                                     "break down by a group of cases (e.g. support, load_kind; see groups in the result)")),
+          Value("channel", str, "", help=("図に出す出力チャネル（省略で最初）", "output channel for the figure (default: the first)"))],
+    check=_check_compare,
+    description=("""評価ジョブの主要数値を 1 つの表に並べる（`mmt compare`）。
+
+行は IoU・相対 L2・コンプライアンス比・浮いた材料・最大応力の誤差などの中央値や割合と、学習の数値（パラメータ数・エポック・分）。
+↓ は小さいほど良い、↑ は大きいほど良い数値で、行の最良を太字にする。`--by support` で件の分類ごとの内訳（cases.csv から）。
+compare.png は同じ件を並べた図（正解と各モデルの 1 案目）。データや分け方が違う評価は警告を付けて並べる。""",
+                 """Put the key numbers of evaluate jobs in one table (`mmt compare`).
+
+Rows are medians and shares (IoU, relative L2, compliance ratio, floating material, peak stress error, ...) and
+training numbers (parameters, epochs, minutes). ↓ = lower is better, ↑ = higher is better; the best of a row is
+bold. `--by support` breaks the numbers down by a group of cases (from cases.csv). compare.png shows the same
+cases side by side (truth and sample 1 of each model). Evaluations of other datasets or splits get a warning."""),
+)
+
 COMMANDS.add_job_commands(schema=jobs.JOB_SCHEMA, jobspec_schema=jobs.JOBSPEC_SCHEMA)
 
 
@@ -307,4 +351,7 @@ def run(name: str, args: dict, out: Optional[str], base: str) -> dict:
     if name == "predict":
         return jobs.run_predict(args["model"], args["data"], args["split"], out, args.get("samples") or 0,
                                 args.get("steps") or 0)
+    if name == "compare":
+        names = [n.strip() for n in (args.get("names") or "").split(",") if n.strip()] or None
+        return jobs.run_compare(args["evals"], base, out, names, args.get("by") or "", args.get("channel") or "")
     raise KeyError(name)

@@ -11,7 +11,8 @@ x channels (element grid ``(nely, nelx)``):
     sed       strain energy density of the fully solid domain under the same load
               (one FEM solve; log(sed / mean), clipped to [-10, 10], divided by 5)
 y channels: density (SIMP result, 1 = material)
-aux: fix, load (node images), volfrac, compliance (of the SIMP design) — used by the evaluation
+aux: fix, load (node images), volfrac, compliance (of the SIMP design) — used by the evaluation;
+     support (index into SUPPORTS) — to break results down by (``groups``)
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import numpy as np
 
 from .. import dataset
 from ..fem import FEM, density_filter, node_masks_to_dofs, simp
-from .common import n_key, simp_keys, split_keys
+from .common import SUPPORTS, n_key, simp_keys, split_keys
 
 ABOUT = ("SIMP のトポロジー最適化（コンプライアンス最小化）の結果。条件（体積率・拘束・荷重）→ 密度",
          "optimal topologies by SIMP (compliance minimization): conditions (volume fraction, supports, load) -> density")
@@ -114,10 +115,11 @@ def generate(spec: dict, out_dir, progress) -> dict:
     split = dataset.make_split(n, spec["n_test"], spec["n_val"], spec["seed"])
     meta = {"source": "simp-topopt", "task": "topopt", "x_channels": X_CHANNELS, "y_channels": Y_CHANNELS,
             "y_kind": "density", "grid": {"nelx": spec["nelx"], "nely": spec["nely"], "on": "elements"},
-            "params": spec}
+            "groups": {"support": list(SUPPORTS)}, "params": spec}
     dataset.save(out_dir, np.stack(xs), np.stack(ys), split, meta,
                  aux={"fix": np.stack(fixes).astype(np.float32), "load": np.stack(loads).astype(np.float32),
-                      "volfrac": np.asarray(vfs, np.float32), "compliance": np.asarray(comps, np.float64)})
+                      "volfrac": np.asarray(vfs, np.float32), "compliance": np.asarray(comps, np.float64),
+                      "support": np.asarray([SUPPORTS.index(k) for k in kinds], np.int8)})
     return {"samples": n, "grid": f"{spec['nelx']}x{spec['nely']}",
             "simp_iterations_mean": round(float(np.mean(iters)), 1),
             "supports": {k: kinds.count(k) for k in spec["supports"]}}
