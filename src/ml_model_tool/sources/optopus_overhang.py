@@ -120,7 +120,10 @@ def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
             cmd = ["julia", f"--project={root}", "-t", "1", str(root / DRIVER), f"cases={work / 'cases.npz'}",
                    f"out={work / f'result_{w}.npz'}", f"first={first + 1}", f"count={min(per, n - first)}",
                    f"iters={spec['iters']}", f"radius={float(spec['radius'])}", "design=element"]
-            env = {**os.environ, "OPENBLAS_NUM_THREADS": "1"}          # one core per worker
+            # one core per worker. JuliaOptopus raises BLAS to every core around each sparse direct solve
+            # unless JULIAOPTOPUS_BLAS_THREADS is set (LinearAlgebraKit/parallel_blas.jl): with several
+            # workers that oversubscribes the cores and a case takes minutes instead of seconds
+            env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "JULIAOPTOPUS_BLAS_THREADS": "1"}
             procs.append(subprocess.Popen(cmd, cwd=work, stdout=log, stderr=subprocess.STDOUT, env=env))
             logs.append(log)
         done_before = -1
