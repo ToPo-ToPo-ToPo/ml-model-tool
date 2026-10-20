@@ -17,13 +17,16 @@
 
 | コマンド | 内容 |
 |---|---|
+| `spec data [--source <source>]` / `spec model [--type <type>]` | 仕様の鍵・既定値・値の範囲・意味と、そのまま書ける例を返す（書く前に確かめる） |
 | `data --spec data.json` | 学習データを作る。`simp-topopt`（SIMP のトポロジー最適化）・`optopus-overhang`（最適化結果 → 自己支持で造れる最適化結果。積層造形。JuliaOptopus で解く）・`simp-fea`（最適化した形状の FEM 結果: 変位・ミーゼス応力・ひずみエネルギー）・`fea-elastic`（線形弾性 FEM の変位場）・`topodiff`（TopoDiff データセットの取り込み） |
 | `train --spec model.json --data <data のジョブ>` | モデルを学習する。`model.type` で `fno` か生成モデル（`diffusion` / `flow` / `vae` / `gan`）。入力チャネルの選択・学習件数・エポック数などを仕様で指定 |
-| `evaluate --model <train のジョブ> --data <データ>` | 正解との誤差、FEM で解いたコンプライアンス（トポロジー最適化）、TopoDiff の評価指標。生成モデルは 1 条件から K 案を作り、案の多様性と K 案中の最良も出す（`--samples` / `--steps`） |
+| `evaluate --model <train のジョブ> --data <データ>` | 正解との誤差、FEM で解いたコンプライアンスと浮いた材料（トポロジー最適化）、最大応力の誤差（FEM）、TopoDiff の評価指標。件ごとの数値は `cases.csv`。生成モデルは 1 条件から K 案を作り、案の多様性と K 案中の最良も出す（`--samples` / `--steps`） |
+| `compare --evals <評価>,<評価>[,…]` | 評価を 1 つの表に並べる（行の最良を太字）。`--by support` などで件の分類ごとの内訳、同じ件を並べた図 |
 | `predict --model <train のジョブ> --data <データ>` | 予測（生成モデルは K 案を生成） |
 | `help [<コマンド>]` / `job list` / `job status` / `job stop` | 書式の説明・ジョブの一覧・状態・停止 |
 
-仕様のキーは [docs/specs.md](docs/specs.md)。
+仕様の鍵は `spec data` / `spec model` か [docs/specs.md](docs/specs.md)（どちらも `src/ml_model_tool/keys.py` の宣言から作る）。
+誤りは `{"state": "rejected", "error": {"stage", "where": <鍵>, "message", "expected"}}` で返る。
 
 ## 動かす
 
@@ -37,11 +40,13 @@ cp ../skills/ml-model/examples/model_default.json model.json
 uv run mmt data --spec data.json --out "$PWD/jobs/data1"
 uv run mmt train --spec model.json --data jobs/data1 --out "$PWD/jobs/train1"
 uv run mmt evaluate --model jobs/train1 --data jobs/data1 --out "$PWD/jobs/eval1"
+uv run mmt spec model --type flow          # 生成モデルの鍵と例（ジョブにならず、その場で答える）
 
 # 生成モデル（Apple シリコンなら MPS、Linux なら CUDA で学習する）
 cp ../skills/ml-model/examples/model_diffusion.json diffusion.json
 uv run mmt train --spec diffusion.json --data jobs/data1 --out "$PWD/jobs/diff1"
 uv run mmt evaluate --model jobs/diff1 --data jobs/data1 --samples 8 --out "$PWD/jobs/eval2"
+uv run mmt compare --evals jobs/eval1,jobs/eval2 --by support --out "$PWD/jobs/cmp1"
 ```
 
 標準出力は結果の JSON 1 行（終了コード 0 = 済んだ・2 = 走らせる前の差し戻し・1 = 走って失敗）。
@@ -59,15 +64,18 @@ uv run mmt evaluate --model jobs/diff1 --data jobs/data1 --samples 8 --out "$PWD
 
 ```text
 src/ml_model_tool/          ライブラリ
+  keys.py                   仕様の鍵の宣言（既定値・値の範囲・意味）。検査・spec コマンド・docs の表の正本
   sources/                  データ仕様 → 標準データセット（simp_topopt / optopus_overhang / simp_fea / fea_elastic / topodiff）
   dataset.py                標準データセット（dataset.npz + dataset.json）
-  spec.py                   データ仕様・モデル仕様の既定値と検査
+  spec.py                   モデルの種類（MODEL_TYPES）とその鍵、データ仕様・モデル仕様の検査
   fem.py                    2D 線形弾性 FEM と SIMP（top88 相当）
   overhang.py               積層造形で造れるか（オーバーハング）の判定
   model.py / training.py    モデルの構築・保存、学習ループ（全種類で共通）
   generative.py             生成モデル（拡散・Flow matching・VAE・GAN）の損失と生成
   nets.py                   VAE・GAN のネットワーク（潜在ベクトルで動く U-Net・encoder・識別器）
-  evaluation.py / plots.py  評価（誤差・FEM・TopoDiff の評価）と図
+  evaluation.py / plots.py  評価（共通の誤差と、問題ごとの Task: トポロジー最適化・FEM・TopoDiff）と図
+  compare.py                評価の比較（表・内訳・図）
+  physics.py                FEM のつり合いの残差（train.physics）
   mcp_server.py             MCP サーバ（道具は run 1 つ）
 src/ml_model_tool_cli/      コマンドの宣言（agk.connect）・CLI・ジョブ
 webapp/app.py               窓
@@ -75,7 +83,9 @@ skills/ml-model/            エージェント向けの手順書と仕様の例
 tests/                      pytest（CPU で数十秒）
 ```
 
-新しい物理問題を足すときは `sources/` に 1 つ足す（学習・評価は共通）。
+新しい物理問題を足すときは `sources/` にモジュールを 1 つ足し（鍵は `KEYS` で宣言）、`SOURCES` に 1 行足す（学習・評価は共通）。
+問題に固有の評価が要るなら `evaluation.py` に `Task` を 1 つ足して `TASKS` に登録する（要約の行・`compare` の行も Task が持つ）。
+鍵を変えたら `uv run python -m ml_model_tool.keys docs/specs.md` で文書の表を作り直す。
 
 ## 注意
 

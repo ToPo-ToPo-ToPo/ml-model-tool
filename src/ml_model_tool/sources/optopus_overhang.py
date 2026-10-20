@@ -21,7 +21,8 @@ x channels (element grid ``(nely, nelx)``):
 y channels: density (the self design, 1 = material)
 aux: fix, load (node images), volfrac, compliance (of the self design by ``fem.FEM``, the solver the
      evaluation uses), design_compliance (of the free design), build (index in
-     ``overhang.BUILD_DIRECTIONS``), optopus_compliance (JuliaOptopus's own value for the self design)
+     ``overhang.BUILD_DIRECTIONS``), optopus_compliance (JuliaOptopus's own value for the self design);
+     support (index into SUPPORTS) and build — to break results down by (``groups``)
 """
 from __future__ import annotations
 
@@ -33,44 +34,57 @@ from pathlib import Path
 
 import numpy as np
 
+from agk.lang import tr
+
 from .. import dataset
 from ..fem import FEM, node_masks_to_dofs
+from ..keys import Int, Key, Num, SpecError, Subset, Text
 from ..overhang import BUILD_DIRECTIONS, base_plate, overhang_volume
-from .simp_topopt import SUPPORTS, _node_to_element, random_case
+from .common import SUPPORTS, n_key, simp_keys, split_keys
+from .simp_topopt import _node_to_element, random_case
 
-SHAPE = ["source", "n", "nelx", "nely", "volfrac", "supports", "load_nodes", "build_directions", "julia_optopus",
-         "iters", "radius", "n_test", "n_val", "seed", "workers"]
-DEFAULTS = {"n": 600, "nelx": 64, "nely": 32, "volfrac": [0.3, 0.5], "supports": list(SUPPORTS),
-            "load_nodes": [2, 3], "build_directions": ["up"], "julia_optopus": "", "iters": 100, "radius": 1.5,
-            "n_test": 60, "n_val": 30, "seed": 0, "workers": 4}
+ABOUT = ("トポロジー最適化の結果 → サポート無しで造れる（自己支持）形。どちらも JuliaOptopus で解く（free と self）",
+         "a topology optimization result -> a self-supporting design (printable without supports), "
+         "both solved by JuliaOptopus (free and self)")
+_SIMP = {k.name: k for k in simp_keys()}
+KEYS = [n_key(600, ("件数（1 件ごとに JuliaOptopus で最適化を 2 回）", "samples (two JuliaOptopus optimizations each)")),
+        *(_SIMP[k] for k in ("nelx", "nely", "volfrac", "supports", "load_nodes")),
+        Key("build_directions", ["up"], Subset(BUILD_DIRECTIONS),
+            ("造形の向き（形が伸びていく向き）。up はベースプレートが下辺、down は上辺、left は右辺、right は左辺。"
+             "複数書くと 1 件ごとにランダムに選ぶ",
+             "build directions (the direction the part grows): up = base plate at the bottom, down = top, "
+             "left = right edge, right = left edge; several are drawn at random per sample")),
+        Key("julia_optopus", "", Text(),
+            ("JuliaOptopus のフォルダ（仕様ファイルからの相対か絶対）。空なら環境変数 JULIA_OPTOPUS",
+             "the JuliaOptopus folder (relative to the spec file, or absolute); empty = the environment "
+             "variable JULIA_OPTOPUS")),
+        Key("iters", 100, Int(1, 10000), ("1 回の最適化の MMA の反復の上限（収束したら早く終わる）",
+                                          "MMA iteration limit per optimization (stops early when converged)")),
+        Key("radius", 1.5, Num(1, 6), ("密度フィルタの半径（要素数）", "density filter radius (elements)")),
+        Key("workers", 4, Int(1, 256), ("並列に走らせる Julia のプロセス数（それぞれ最初に JuliaOptopus をコンパイルする）",
+                                        "parallel Julia processes (each compiles JuliaOptopus first)")),
+        *split_keys(60, 30)]
 X_CHANNELS = ["design", "volfrac", "fix_x", "fix_y", "load_x", "load_y", "base"]
+Y_CHANNELS = ["density"]
 DRIVER = Path("main/linear_elasticity/TO/am_overhang/ml_dataset.jl")
 
 
 def optopus_root(spec: dict) -> Path:
     root = spec["julia_optopus"] or os.environ.get("JULIA_OPTOPUS", "")
     if not root:
-        raise ValueError("julia_optopus: the JuliaOptopus folder (or set the environment variable JULIA_OPTOPUS)")
+        raise SpecError("julia_optopus", tr("JuliaOptopus のフォルダを書く（または環境変数 JULIA_OPTOPUS）",
+                                            "the JuliaOptopus folder (or set the environment variable JULIA_OPTOPUS)"))
     if not (Path(root) / DRIVER).is_file():
-        raise ValueError(f"julia_optopus: {DRIVER} not found in {root} (a JuliaOptopus checkout with the "
-                         "ml_dataset driver)")
+        raise SpecError("julia_optopus", tr(f"{root} に {DRIVER} が無い（ml_dataset ドライバのある JuliaOptopus を指す）",
+                                            f"{DRIVER} not found in {root} (a JuliaOptopus checkout with the "
+                                            "ml_dataset driver)"))
     return Path(root)
 
 
 def check(spec: dict) -> None:
-    from .simp_topopt import check as check_simp
-
-    check_simp({**spec, "rmin": 1.5, "maxiter": 1})
-    dirs = spec["build_directions"]
-    if not (isinstance(dirs, list) and dirs and all(d in BUILD_DIRECTIONS for d in dirs)):
-        raise ValueError(f"build_directions: a list of {', '.join(BUILD_DIRECTIONS)} (the direction the part "
-                         "grows; up = base plate at the bottom)")
-    if not (isinstance(spec["iters"], int) and spec["iters"] >= 1):
-        raise ValueError("iters must be a positive integer (MMA iterations per optimization)")
-    if not (isinstance(spec["radius"], (int, float)) and 1.0 <= spec["radius"] <= 6.0):
-        raise ValueError("radius must be 1-6 (density filter radius in elements)")
     if shutil.which("julia") is None:
-        raise ValueError("julia is not on the PATH (install Julia, e.g. with juliaup)")
+        raise SpecError("julia_optopus", tr("julia がコマンドとして見つからない（juliaup などで Julia 1.10.11 を入れる）",
+                                            "julia is not on the PATH (install Julia 1.10.11, e.g. with juliaup)"))
     optopus_root(spec)
 
 
@@ -160,13 +174,15 @@ def generate(spec: dict, out_dir, progress) -> dict:
     split = dataset.make_split(n, spec["n_test"], spec["n_val"], spec["seed"])
     meta = {"source": "optopus-overhang", "task": "topopt-am", "x_channels": X_CHANNELS, "y_channels": ["density"],
             "y_kind": "density", "grid": {"nelx": nelx, "nely": nely, "on": "elements"},
-            "build_directions": list(BUILD_DIRECTIONS), "solver": "JuliaOptopus (free / self)", "params": spec}
+            "build_directions": list(BUILD_DIRECTIONS), "solver": "JuliaOptopus (free / self)",
+            "groups": {"support": list(SUPPORTS), "build": list(BUILD_DIRECTIONS)}, "params": spec}
     comps, dcomps = np.asarray(comps), np.asarray(dcomps)
     dataset.save(out_dir, np.stack(xs), target[:, None], split, meta,
                  aux={"fix": cases["fix"].astype(np.float32), "load": cases["load"].astype(np.float32),
                       "volfrac": cases["volfrac"].astype(np.float32), "compliance": comps,
                       "design_compliance": dcomps, "build": cases["build"].astype(np.int8),
-                      "optopus_compliance": res["self_compliance"]})
+                      "optopus_compliance": res["self_compliance"],
+                      "support": np.asarray([SUPPORTS.index(k) for k in cases["kinds"]], np.int8)})
     agree = np.abs(comps / res["self_compliance"] - 1)
     return {"samples": n, "grid": f"{nelx}x{nely}", "minutes": round(minutes, 1),
             "overhang_input_mean": round(float(np.mean(oh_in)), 4),

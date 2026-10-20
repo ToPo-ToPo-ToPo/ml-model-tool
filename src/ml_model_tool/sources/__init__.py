@@ -1,10 +1,12 @@
 """Data sources: each turns a data spec into the standard dataset (``ml_model_tool.dataset``).
 
 A source is a module with
-    ``SHAPE``     the keys its data spec accepts (``agk.shape``; unknown keys are rejected)
-    ``DEFAULTS``  default values of those keys
-    ``check(spec)``  argument checks that need more than key names (raise ValueError)
+    ``ABOUT``       (ja, en) one line: what the data is (shown by ``spec data``)
+    ``KEYS``        its data spec keys (``keys.Key``: default, values, meaning)
+    ``X_CHANNELS`` / ``Y_CHANNELS``  the input and target channels
+    ``check(spec)`` optional: checks across keys (raise ``keys.SpecError``)
     ``generate(spec, out_dir, progress) -> dict``  writes dataset.npz / dataset.json, returns a summary
+Adding a source = one module here and one line in ``SOURCES``.
 """
 from __future__ import annotations
 

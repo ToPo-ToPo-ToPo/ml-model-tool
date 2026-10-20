@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from ml_model_tool import dataset, spec as specs
+from ml_model_tool.keys import SpecError, defaults
 from ml_model_tool.overhang import BUILD_DIRECTIONS, base_plate, from_up, overhang_volume, to_up, unprintable
 from ml_model_tool.sources import optopus_overhang
 from ml_model_tool_cli import jobs
@@ -40,13 +41,13 @@ def test_unprintable_in_every_build_direction():
 
 
 def test_cases_are_reproducible_and_checked():
-    spec = {**optopus_overhang.DEFAULTS, **OVERHANG_SPEC}
+    spec = {**defaults(optopus_overhang.KEYS), **OVERHANG_SPEC}
     a, b = optopus_overhang.make_cases(spec), optopus_overhang.make_cases(spec)
     assert np.array_equal(a["fix"], b["fix"]) and np.array_equal(a["build"], b["build"])
     assert a["fix"].shape == (10, 2, 9, 17) and set(a["build"]) <= set(range(4))
-    with pytest.raises(ValueError, match="build_directions"):
-        optopus_overhang.check({**spec, "build_directions": ["sideways"]})
-    with pytest.raises(ValueError, match="julia_optopus"):
+    with pytest.raises(SpecError, match="build_directions"):
+        specs.data_spec({**OVERHANG_SPEC, "build_directions": ["sideways"]})
+    with pytest.raises(SpecError, match="julia_optopus"):
         optopus_overhang.optopus_root({**spec, "julia_optopus": "/nonexistent"})
 
 
