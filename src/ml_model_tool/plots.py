@@ -1,7 +1,9 @@
 """Figures for summaries (PNG). Density targets in grey (black = material), fields in red/blue.
 
 Supports (channels ``fix_x`` / ``fix_y``) are drawn as blue marks and the load (``load_x`` /
-``load_y``) as an orange arrow at its centroid, whenever the inputs have those channels.
+``load_y``) as an orange arrow at its centroid, whenever the inputs have those channels. The base plate
+of additive manufacturing (channel ``base``) is a green line, and an input design (channel ``design``)
+gets its own panel in ``compare``.
 """
 from __future__ import annotations
 
@@ -10,7 +12,7 @@ from typing import Optional
 
 import numpy as np
 
-INK, MUTED, SUPPORT, LOAD = "#1f2328", "#6e7781", "#2f6fbf", "#d4580f"
+INK, MUTED, SUPPORT, LOAD, BASE = "#1f2328", "#6e7781", "#2f6fbf", "#d4580f", "#2e9d5b"
 
 
 def _plt():
@@ -27,6 +29,10 @@ def _overlay(ax, x: np.ndarray, channels: list[str]) -> None:
     def ch(name):
         return x[channels.index(name)] if name in channels else None
 
+    base = ch("base")
+    if base is not None and base.any():
+        iy, ix = np.nonzero(base > 0)
+        ax.scatter(ix, iy, s=4, marker="s", color=BASE, linewidths=0, zorder=2)
     fx, fy = ch("fix_x"), ch("fix_y")
     if fx is not None and fy is not None:
         iy, ix = np.nonzero((fx > 0) | (fy > 0))
@@ -63,11 +69,17 @@ def compare(path, x: np.ndarray, x_channels: list[str], pred: np.ndarray, truth:
         pred = pred[:, None]
         notes = None if notes is None else [[s] for s in notes]
     n, k = pred.shape[:2]
+    shown_input = "design" in x_channels and y_kind == "density"
     per = k + (1 if truth is not None else 0)
-    cols = len(y_channels) * per
+    cols = len(y_channels) * per + (1 if shown_input else 0)
     fig, axes = plt.subplots(n, cols, figsize=(2.6 * cols + 0.4, 2.4 * n + 0.6), squeeze=False, facecolor="white")
     for i in range(n):
         c = 0
+        if shown_input:
+            _show(axes[i, c], x[i, x_channels.index("design")], "density")
+            _overlay(axes[i, c], x[i], x_channels)
+            axes[i, c].set_title(f"case {i + 1}  input design", fontsize=8, loc="left", color=INK)
+            c += 1
         for j, name in enumerate(y_channels):
             vmax = np.abs(truth[i, j]).max() if truth is not None and y_kind != "density" else None
             if truth is not None:
@@ -80,7 +92,7 @@ def compare(path, x: np.ndarray, x_channels: list[str], pred: np.ndarray, truth:
                 _overlay(axes[i, c], x[i], x_channels)
                 note = notes[i][s] if notes and s < len(notes[i]) and notes[i][s] else ""
                 label = f"sample {s + 1}" if generative else "predicted"
-                head = f"case {i + 1}  " if truth is None and s == 0 else ""
+                head = f"case {i + 1}  " if truth is None and s == 0 and not shown_input else ""
                 axes[i, c].set_title(f"{head}{name} {label}" + (f"  {note}" if note else ""), fontsize=8,
                                      loc="left", color=INK)
                 c += 1

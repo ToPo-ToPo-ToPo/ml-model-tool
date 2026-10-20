@@ -53,6 +53,7 @@ description: 物理問題の機械学習モデルを作るときの手順。学�
 | `iou` ↑ | 材料（0.5 以上）の重なり | 画素が合っても性能が良いとは限らない |
 | `compliance_ratio` ↓ | 予測した形を FEM で解いた剛性の逆数 ÷ SIMP | 1 に近いほど良い。2 以上は破綻 |
 | `floating_share` ↓ | 拘束までつながっていない材料を含む案の割合 | 0 が理想 |
+| `overhang_share` ↓ | 積層造形で造れない材料（ベースプレートから 45° の支えが続かない）を含む案の割合（`optopus-overhang`） | 0 が理想。`overhang_input_share` が入力の形の値 |
 | `rel_l2` ↓ | 場の相対誤差（量ごとに `rel_l2/<量>`） | 1 は「全部 0 と予測」と同じ |
 | `peak_stress_error` ↓ | 最大ミーゼス応力の誤差 | FEM の結果を予測するとき |
 | `diversity` | 生成した案どうしの違い | 0 に近いなら毎回同じ形 |
@@ -66,6 +67,7 @@ description: 物理問題の機械学習モデルを作るときの手順。学�
 - **FNO と生成モデルを比べる**: 同じデータで `model.type` だけを変え、`compare --evals …,… --by support` で拘束の種類ごとにも見る。
 - **データ量の効果を確かめる**: `train.n_train` だけを変える。
 - **FEM の結果を予測する**: `simp-fea` のデータで FNO を学習する。荷重ケースごとの差は `compare --by load_kind`（最適化に使った荷重か新しい荷重か）。
+- **最適化結果を自己支持の形に直す**: `optopus-overhang` のデータ（入力は最適化の結果、正解はサポート無しで造れる形。どちらも JuliaOptopus で解く。`julia_optopus` か環境変数 `JULIA_OPTOPUS` が要る）で生成モデルを学習する。`overhang_share` を入力の形の値と比べ、造形の向きごとの差は `compare --by build`。
 
 ## 分かっていること（このツールでの検証から）
 
@@ -84,4 +86,4 @@ description: 物理問題の機械学習モデルを作るときの手順。学�
 
 `examples/` の仕様（`read_skill("ml-model", "examples/<名前>")`）: `data_simp_topopt.json`・`data_fea_elastic.json`・
 `data_topodiff.json`・`model_default.json`・`model_ablation_no_sed.json`・`model_diffusion.json`・`model_flow.json`・
-`model_vae.json`・`model_gan.json`。鍵の一覧は `spec data` / `spec model` が正本。
+`model_vae.json`・`model_gan.json`・`data_optopus_overhang.json`・`model_overhang_diffusion.json`。鍵の一覧は `spec data` / `spec model` が正本。

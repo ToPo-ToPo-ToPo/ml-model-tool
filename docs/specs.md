@@ -33,6 +33,59 @@
 入力（要素の格子）: `volfrac`・`fix_x`・`fix_y`・`load_x`・`load_y`・`sed`（全面材料の FEM のひずみエネルギー密度。
 log(sed/平均) を [-10, 10] に切って 5 で割る）。出力: `density`。`aux`: 節点の固定・荷重、SIMP 結果のコンプライアンス。
 
+### `optopus-overhang` — 最適化結果を自己支持の形に直す（積層造形。ソルバは JuliaOptopus）
+
+入力はトポロジー最適化の結果、出力は同じ条件でサポート無し（自己支持）で造れるように最適化した結果。
+生成モデルに「この形を、積層造形でサポート無しに造れる形に直した案」を作らせるためのデータ。
+どちらも [JuliaOptopus](https://github.com/ToPo-ToPo-ToPo/JuliaOptopus) で解く（ドライバ
+`main/linear_elasticity/TO/am_overhang/ml_dataset.jl`）。
+
+<!-- keys:data/optopus-overhang -->
+| キー | 既定 | 値 | 意味 |
+|---|---|---|---|
+| `n` | `600` | 10 以上の整数 | 件数（1 件ごとに JuliaOptopus で最適化を 2 回） |
+| `nelx` | `64` | 8 以上 512 以下の整数 | 横の要素数 |
+| `nely` | `32` | 8 以上 512 以下の整数 | 縦の要素数 |
+| `volfrac` | `[0.3, 0.5]` | [最小, 最大] の数 2 つ（0.05 ≦ 最小 ≦ 最大 ≦ 0.95） | 体積率の範囲 [最小, 最大]（1 件ごとにこの範囲から引く） |
+| `supports` | 3 種すべて | ["cantilever", "both-ends", "pin-roller"] から選んだリスト（1 つ以上） | 拘束の種類: cantilever（左端を固定）・both-ends（左右端）・pin-roller（左下 3 節点を x・y、右下 3 節点を y だけ固定） |
+| `load_nodes` | `[2, 3]` | [最小, 最大] の整数 2 つ（2 ≦ 最小 ≦ 最大 ≦ 8） | 線荷重の節点数の範囲（境界上。合計の大きさ 1、向きはランダム。点荷重は 2 次元弾性で特異なので使わない） |
+| `build_directions` | `["up"]` | ["up", "down", "left", "right"] から選んだリスト（1 つ以上） | 造形の向き（形が伸びていく向き）。up はベースプレートが下辺、down は上辺、left は右辺、right は左辺。複数書くと 1 件ごとにランダムに選ぶ |
+| `julia_optopus` | `""` | 文字列 | JuliaOptopus のフォルダ（仕様ファイルからの相対か絶対）。空なら環境変数 JULIA_OPTOPUS |
+| `iters` | `100` | 1 以上 10000 以下の整数 | 1 回の最適化の MMA の反復の上限（収束したら早く終わる） |
+| `radius` | `1.5` | 1 以上 6 以下の数 | 密度フィルタの半径（要素数） |
+| `workers` | `4` | 1 以上 256 以下の整数 | 並列に走らせる Julia のプロセス数（それぞれ最初に JuliaOptopus をコンパイルする） |
+| `n_test` | `60` | 0 以上の整数 | テストの件数（学習に使わない。評価はこれで行う） |
+| `n_val` | `30` | 0 以上の整数 | 検証の件数（毎エポックの検証の損失。最良のエポックの選択に使う） |
+| `seed` | `0` | 0 以上の整数 | 乱数の種（同じ種なら同じデータ・同じテスト件） |
+<!-- /keys -->
+
+1 件ごとに JuliaOptopus の 2 つのモードを同じ設定（quad4 要素・大きさ 1、射影 β = 5、p = 3、MMA）で解く。
+
+- `free`（AM の制約なし）→ 入力の形
+- `self`（Langelaar のサポート共最適化で、サポートを禁止したもの = 自己支持の形だけ。張り出しは造形方向から 45° まで）→ 正解
+
+体積率・拘束・荷重は入力と正解で同じ。Julia（juliaup など）が要る。
+
+1 件解くごとに `--out` の下の `optopus/cases/` に保存する。途中で止めても（Ctrl-C・`kill`）、同じ仕様・同じ `--out` で
+もう一度走らせればまだの件だけを解く。件数・`seed`・`iters`・`radius` などを変えると最初から解く。
+
+入力（要素の格子）: `design`（free の結果）・`volfrac`・`fix_x`・`fix_y`・`load_x`・`load_y`・`base`
+（ベースプレートに載る層が 1。造形の向きを表す）。出力: `density`（self の結果）。`aux`: 節点の固定・荷重、正解の
+コンプライアンス（評価と同じ Python の FEM で計算）、入力の形のコンプライアンス（`design_compliance`）、造形の向き
+（`build`）、JuliaOptopus 自身のコンプライアンス（`optopus_compliance`）。
+
+`data` の `summary.md` に、入力・正解のオーバーハング（`overhang_input_mean` / `overhang_target_mean`: 造れない材料の
+割合の平均。正解はほぼ 0 のはず）、自己支持にして増えたコンプライアンス（`compliance_target_over_input_median`）、
+正解の灰色率（`gray_target_median`）、Python の FEM と JuliaOptopus のコンプライアンスの差（
+`compliance_fem_vs_optopus_max_rel_diff`。同じ FEM なので 1% 未満。JuliaOptopus の密度はわずかに 1 を超えることがあり、
+Python 側で [0, 1] に切るぶんだけずれる）が出る。
+
+評価（`task: topopt-am`）: `simp-topopt` と同じコンプライアンス比（正解 = self の結果との比）と浮いた材料に加えて、
+`overhang`（造れない材料: 密度 0.5 以上の材料のうち、ベースプレートから下の 3 要素を伝ってつながらない部分。
+JuliaOptopus の `floating_fraction` と同じ判定。`share` はそれを含む案の割合、`volume_mean` は材料に占める割合の平均）と、
+比べる基準として入力の形の値（`overhang_input`）。生成モデルは全案の値も出る（`generative.overhang_all`）。
+`compare.png` は入力の形・正解・案を並べ、造れない材料を含む案に `OH 3%` のように付く。ベースプレートは緑の線。
+
 ### `simp-fea` — 最適化した形状の FEM 結果（FEM のサロゲート）
 
 <!-- keys:data/simp-fea -->
@@ -311,7 +364,8 @@ spectral normalization 付き）を交互に学ぶ。生成は z を引いて生
 - `generative.best_of_k`: K 案の中で最も良い案の数値。IoU（正解に最も近い案）、相対 L2、`simp-topopt` は
   FEM で解いたコンプライアンスで選んだ案、TopoDiff のテストは CE が最も小さい案。FEM で候補を選ぶ使い方の上限の目安
 - `generative.compliance_ratio_all`: 全案のコンプライアンス比（破綻する案の割合を見る）
-- `floating`（`simp-topopt`。FNO も）: 浮いた材料。材料（密度 0.5 以上）のうち、要素の辺を通って拘束に触れる要素まで
+- `overhang`（`optopus-overhang`）: 造れない材料（上の `optopus-overhang` の節）
+- `floating`（`simp-topopt`・`optopus-overhang`。FNO も）: 浮いた材料。材料（密度 0.5 以上）のうち、要素の辺を通って拘束に触れる要素まで
   つながっていない部分。角だけで接する要素はそこで回転できるので、つながっていないとみなす。`share` は浮いた材料を
   含む案の割合、`share_gt_1pct` は浮いた材料が材料の 1% を超える案の割合、`volume_mean` は材料に占める割合の平均。
   生成モデルは 1 案目の値で、`generative.floating_all` が全案の値。`compare.png` では浮いた材料を含む案に `float` と付く

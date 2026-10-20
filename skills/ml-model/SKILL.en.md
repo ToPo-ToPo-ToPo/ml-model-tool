@@ -54,6 +54,7 @@ In the `compare` table ↓ means lower is better, ↑ higher is better, and the 
 | `iou` ↑ | overlap of the material (density >= 0.5) | matching pixels do not guarantee performance |
 | `compliance_ratio` ↓ | FEM compliance of the predicted design / SIMP's | near 1 is good; above 2 is broken |
 | `floating_share` ↓ | share of designs with material not joined to a support | 0 is ideal |
+| `overhang_share` ↓ | share of designs with material that cannot be printed (no 45° support chain from the base plate; `optopus-overhang`) | 0 is ideal; `overhang_input_share` is the input design's value |
 | `rel_l2` ↓ | relative error of a field (`rel_l2/<channel>` per channel) | 1 = as bad as predicting all zeros |
 | `peak_stress_error` ↓ | error of the peak von Mises stress | when predicting FEM results |
 | `diversity` | how different the generated designs are | near 0 = the same design every time |
@@ -67,6 +68,7 @@ A training `overfit_ratio` (validation / training loss) above 2 means memorizing
 - **FNO vs a generative model**: change only `model.type`; `compare --evals …,… --by support` also shows each support type.
 - **Effect of data size**: change only `train.n_train`.
 - **Predicting FEM results**: train an FNO on `simp-fea` data; `compare --by load_kind` splits optimized loads from new ones.
+- **Reworking an optimized design to be self-supporting**: train a generative model on `optopus-overhang` data (input: the optimization result, target: a design printable without supports, both solved by JuliaOptopus; needs `julia_optopus` or the environment variable `JULIA_OPTOPUS`). Compare `overhang_share` with the input design's value; `compare --by build` splits by build direction.
 
 ## What we know (from runs of this tool)
 
@@ -85,4 +87,4 @@ A training `overfit_ratio` (validation / training loss) above 2 means memorizing
 
 Specs in `examples/` (`read_skill("ml-model", "examples/<name>")`): `data_simp_topopt.json`, `data_fea_elastic.json`,
 `data_topodiff.json`, `model_default.json`, `model_ablation_no_sed.json`, `model_diffusion.json`, `model_flow.json`,
-`model_vae.json`, `model_gan.json`. The key lists of `spec data` / `spec model` are authoritative.
+`model_vae.json`, `model_gan.json`, `data_optopus_overhang.json`, `model_overhang_diffusion.json`. The key lists of `spec data` / `spec model` are authoritative.

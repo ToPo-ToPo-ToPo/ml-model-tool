@@ -8,7 +8,7 @@ keys here, per model type (``MODEL_TYPES``). The command layer rejects unknown k
 
 Data spec (``data --spec data.json``)::
 
-    {"source": "simp-topopt" | "simp-fea" | "fea-elastic" | "topodiff", ...keys of that source...}
+    {"source": "simp-topopt" | "optopus-overhang" | "simp-fea" | "fea-elastic" | "topodiff", ...keys of that source...}
 
 Model spec (``train --spec model.json --data <dataset>``); ``model.type`` picks the kind (default fno)::
 

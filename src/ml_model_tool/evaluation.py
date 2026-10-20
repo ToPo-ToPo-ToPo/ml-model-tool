@@ -7,6 +7,9 @@ Domain checks: one ``Task`` per kind of dataset (``dataset.json``'s ``task``), r
   topopt          compliance of the predicted density by FEM / compliance of the SIMP design
                   (median, share <= 1.05, share > 2, worst), and floating material: material
                   (density >= 0.5) not joined through element edges to any supported element
+  topopt-am       the same against the self-supporting design (optopus-overhang), and overhang: the share of
+                  the material that cannot be printed from the base plate (``overhang.unprintable``),
+                  also of the input design (``overhang_input``, what the model has to fix)
   fea             FEM results (simp-fea / fea-elastic): relative L2 per channel, the peak von Mises stress
                   error (|max pred - max truth| / max truth, as the literature reports) and the compliance
                   from the predicted energies (sum of ``energy``) against the FEM compliance. For nodal
@@ -193,6 +196,24 @@ def fea_nodal_cases(ds: Dataset, idx: np.ndarray, pred: np.ndarray) -> dict:
     T = lambda a: torch.from_numpy(np.asarray(a, np.float64))
     out["equilibrium_residual"] = eq.residual(T(pred), T(ds.aux["density"][idx]), T(ds.aux["fix"][idx]),
                                               T(ds.aux["load"][idx])).numpy()
+    return out
+
+
+def _overhang_stats(v: np.ndarray) -> dict:
+    v = np.asarray(v, float)
+    return {"share": round(float(np.mean(v > 0)), 3), "share_gt_1pct": round(float(np.mean(v > 0.01)), 3),
+            "volume_mean": round(float(v.mean()), 4), "volume_max": round(float(v.max()), 4)}
+
+
+def topopt_overhang(ds: Dataset, idx: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    """Share of the material that cannot be printed, for every design, (N, K)."""
+    from .overhang import overhang_volume
+
+    dirs = ds.meta["build_directions"]
+    out = np.zeros(samples.shape[:2])
+    for i, case in enumerate(idx):
+        for j in range(samples.shape[1]):
+            out[i, j] = overhang_volume(samples[i, j, 0], dirs[int(ds.aux["build"][case])])
     return out
 
 
@@ -469,13 +490,71 @@ class TopodiffLevel(Task):
         return out
 
 
-TASKS: dict[str, Task] = {"topopt": Topopt(), "fea": Fea(), "topodiff-level": TopodiffLevel()}
+class TopoptAM(Topopt):
+    """``Topopt`` against the self-supporting design, plus overhang: material that cannot be printed from the
+    base plate, of the predicted designs and (as the baseline) of the input design."""
+
+    def evaluate(self, c: Context) -> Result:
+        res = super().evaluate(c)
+        if "build" not in c.ds.aux:
+            return res
+        OH = topopt_overhang(c.ds, c.idx, c.S)
+        res.metrics["overhang"] = _overhang_stats(OH[:, 0])
+        res.cases["overhang"] = OH[:, 0]
+        if "design" in c.ds.x_channels:
+            design = c.ds.x[c.idx][:, [c.ds.x_channels.index("design")]][:, None]
+            OI = topopt_overhang(c.ds, c.idx, design)[:, 0]
+            res.metrics["overhang_input"] = _overhang_stats(OI)
+            res.cases["overhang_input"] = OI
+        if c.k > 1:
+            res.generative = {**(res.generative or {}), "overhang_all": _overhang_stats(OH.ravel())}
+        if res.notes is not None:
+            res.notes = [[n + (f" OH {o:.0%}" if o > 0 else "") for n, o in zip(row, orow)]
+                         for row, orow in zip(res.notes, OH)]
+        return res
+
+    def lines(self, m: dict) -> list[str]:
+        rows = [r.replace("compliance / SIMP", "compliance / self design") for r in super().lines(m)]
+        if "overhang" in m:
+            o = m["overhang"]
+            rows.append(f"- overhang (material that cannot be printed): {o['share']:.0%} of designs (more than 1% of "
+                        f"the material: {o['share_gt_1pct']:.0%})  mean share of the material {o['volume_mean']}")
+        if "overhang_input" in m:
+            o = m["overhang_input"]
+            rows.append(f"  - the input designs: {o['share']:.0%} have overhang  mean share of the material "
+                        f"{o['volume_mean']}")
+        return rows
+
+    def lines_k(self, g: dict) -> list[str]:
+        rows = [r.replace("compliance / SIMP", "compliance / self design") for r in super().lines_k(g)]
+        if "overhang_all" in g:
+            o = g["overhang_all"]
+            rows.append(f"- all {g['samples']} designs: overhang {o['share']:.0%} "
+                        f"(more than 1% of the material: {o['share_gt_1pct']:.0%})")
+        return rows
+
+    def numbers(self, m: dict) -> dict:
+        out = super().numbers(m)
+        if "overhang" in m:
+            out.update({"overhang_share": m["overhang"]["share"], "overhang_gt_1pct": m["overhang"]["share_gt_1pct"],
+                        "overhang_volume": m["overhang"]["volume_mean"]})
+        if "overhang_input" in m:
+            out["overhang_input_share"] = m["overhang_input"]["share"]
+        g = m.get("generative") or {}
+        if "overhang_all" in g:
+            out["all_overhang_share"] = g["overhang_all"]["share"]
+        return out
+
+
+TASKS: dict[str, Task] = {"topopt": Topopt(), "topopt-am": TopoptAM(), "fea": Fea(),
+                          "topodiff-level": TopodiffLevel()}
 
 # which way is better, for ``compare`` (numbers not listed are shown without a pick)
 LOWER_IS_BETTER = ("mae", "volume_error", "bce", "rel_l2", "mse", "compliance_ratio", "compliance_gt_2",
                    "floating_share", "floating_gt_1pct", "peak_stress_error", "compliance_error", "equilibrium_residual",
                    "best_of_k_rel_l2", "best_of_k_compliance_ratio", "all_compliance_gt_2", "all_floating_share",
-                   "CE_mean", "CE_median", "VFE_mean", "LD_share", "FM_share", "best_of_k_CE_mean")
+                   "CE_mean", "CE_median", "VFE_mean", "LD_share", "FM_share", "best_of_k_CE_mean",
+                   "overhang_share", "overhang_gt_1pct", "overhang_volume", "all_overhang_share")
 HIGHER_IS_BETTER = ("iou", "compliance_le_1.05", "best_of_k_iou", "best_of_k_compliance_le_1.05")
 
 
@@ -577,6 +656,8 @@ def _task_of(m: dict) -> Optional[Task]:
     """The task that made these metrics (metrics.json of older versions: by the numbers it leaves)."""
     if m.get("task"):
         return TASKS.get(m["task"])
+    if "overhang" in m:
+        return TASKS["topopt-am"]
     if "compliance_ratio" in m or "floating" in m:
         return TASKS["topopt"]
     if "topodiff" in m:
