@@ -8,10 +8,11 @@ A source is a module with
 """
 from __future__ import annotations
 
-from . import fea_elastic, simp_fea, simp_topopt, topodiff
+from . import fea_elastic, optopus_overhang, simp_fea, simp_topopt, topodiff
 
 SOURCES = {
     "simp-topopt": simp_topopt,
+    "optopus-overhang": optopus_overhang,
     "simp-fea": simp_fea,
     "fea-elastic": fea_elastic,
     "topodiff": topodiff,

@@ -7,6 +7,9 @@ Domain checks, chosen by the dataset's task:
   topopt          compliance of the predicted density by FEM / compliance of the SIMP design
                   (median, share <= 1.05, share > 2, worst), and floating material: material
                   (density >= 0.5) not joined through element edges to any supported element
+  topopt-am       the same against the self-supporting design (optopus-overhang), and overhang: the share of
+                  the material that cannot be printed from the base plate (``overhang.unprintable``),
+                  also of the input design (``overhang_input``, what the model has to fix)
   fea             FEM results on designs (simp-fea): relative L2 per channel, the peak von Mises stress
                   error (|max pred - max truth| / max truth, as the literature reports) and the compliance
                   from the predicted energies (sum of ``energy``) against the FEM compliance. For nodal
@@ -178,6 +181,24 @@ def fea_nodal_metrics(ds: Dataset, idx: np.ndarray, pred: np.ndarray) -> dict:
     return out
 
 
+def _overhang_stats(v: np.ndarray) -> dict:
+    v = np.asarray(v, float)
+    return {"share": round(float(np.mean(v > 0)), 3), "share_gt_1pct": round(float(np.mean(v > 0.01)), 3),
+            "volume_mean": round(float(v.mean()), 4), "volume_max": round(float(v.max()), 4)}
+
+
+def topopt_overhang(ds: Dataset, idx: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    """Share of the material that cannot be printed, for every design, (N, K)."""
+    from .overhang import overhang_volume
+
+    dirs = ds.meta["build_directions"]
+    out = np.zeros(samples.shape[:2])
+    for i, case in enumerate(idx):
+        for j in range(samples.shape[1]):
+            out[i, j] = overhang_volume(samples[i, j, 0], dirs[int(ds.aux["build"][case])])
+    return out
+
+
 def topopt_ratios(ds: Dataset, idx: np.ndarray, samples: np.ndarray, progress) -> np.ndarray:
     """Compliance by FEM / SIMP compliance for every design, (N, K)."""
     from .fem import FEM, node_masks_to_dofs
@@ -286,17 +307,26 @@ def evaluate(bundle: Bundle, ds: Dataset, split: str, out_dir: str | Path,
             metrics["generative"]["best_of_k"] = best_of_k(S, y, y_kind)
     notes = None
     task = ds.meta.get("task")
-    if task == "topopt" and "compliance" in ds.aux:
+    if task in ("topopt", "topopt-am") and "compliance" in ds.aux:
         R = topopt_ratios(ds, idx, S, progress)
         FL = topopt_floating(ds, idx, S)
         metrics["compliance_ratio"] = _compliance_stats(R[:, 0])
         metrics["floating"] = _floating_stats(FL[:, 0])
+        OH = topopt_overhang(ds, idx, S) if "build" in ds.aux else np.zeros_like(R)
+        if "build" in ds.aux:
+            metrics["overhang"] = _overhang_stats(OH[:, 0])
+            if "design" in ds.x_channels:
+                design = ds.x[idx][:, [ds.x_channels.index("design")]][:, None]
+                metrics["overhang_input"] = _overhang_stats(topopt_overhang(ds, idx, design)[:, 0])
         if k > 1:
             metrics["generative"].setdefault("best_of_k", {})["compliance_ratio"] = _compliance_stats(R.min(1))
             metrics["generative"]["compliance_ratio_all"] = _compliance_stats(R.ravel())
             metrics["generative"]["floating_all"] = _floating_stats(FL.ravel())
-        notes = [[f"C x{r:.2f}" + (" float" if f > 0 else "") for r, f in zip(row[:N_FIGURE_SAMPLES], frow)]
-                 for row, frow in zip(R[:N_FIGURE], FL[:N_FIGURE])]
+            if "build" in ds.aux:
+                metrics["generative"]["overhang_all"] = _overhang_stats(OH.ravel())
+        notes = [[f"C x{r:.2f}" + (" float" if f > 0 else "") + (f" OH {o:.0%}" if o > 0 else "")
+                  for r, f, o in zip(row[:N_FIGURE_SAMPLES], frow, orow)]
+                 for row, frow, orow in zip(R[:N_FIGURE], FL[:N_FIGURE], OH[:N_FIGURE])]
     elif task == "fea" and y is not None:
         if ds.meta.get("grid", {}).get("on") == "nodes" and "density" in ds.aux:
             metrics.update(fea_nodal_metrics(ds, idx, pred))

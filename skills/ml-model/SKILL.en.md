@@ -37,9 +37,14 @@ Read `summary.md` first and look at the figures (`preview.png` / `loss.png` / `c
 
 ## Steps
 
-1. **Make data**: write `data.json`, run `data --spec data.json`. Three sources (all keys in docs/specs.md):
+1. **Make data**: write `data.json`, run `data --spec data.json`. Five sources (all keys in docs/specs.md):
    - `simp-topopt`: topology optimization on a rectangle (64×32 by default); 3 support types, one line load on the boundary,
      a volume fraction range. 6 input channels (volfrac, fix_x, fix_y, load_x, load_y, sed) → density
+   - `optopus-overhang`: a topology optimization result → a design printable without supports (self-supporting,
+     overhangs up to 45°), both solved by JuliaOptopus (free and self). 7 inputs (design, volfrac, fix_x, fix_y, load_x,
+     load_y, base) → density. `build_directions` sets the build direction; `julia_optopus` (or the environment variable
+     `JULIA_OPTOPUS`) is the JuliaOptopus folder, `workers` the parallel processes. Data for generating several
+     printable designs with a generative model
    - `fea-elastic`: linear elasticity on a full square (64×64 by default); two fixed lines and one line load anywhere.
      5 input channels (material, fix_x, fix_y, load_x, load_y) → displacement ux, uy
    - `simp-fea`: SIMP-optimized designs (64×32 by default) analysed by FEM under `load_cases` loads each.
@@ -57,6 +62,9 @@ Read `summary.md` first and look at the figures (`preview.png` / `loss.png` / `c
    - density: IoU (material overlap at 0.5), MAE, volume error
    - `simp-topopt` also: compliance of the predicted design by FEM / SIMP (close to 1 is good; above 2 means a broken design)
      and floating material (material not joined to a support; `floating.share` = share of designs that have some)
+   - `optopus-overhang` also: `overhang` (material that cannot be printed from the base plate; `share` = share of designs
+     with some) and, as the baseline, the same for the input design (`overhang_input`). The compliance ratio is against
+     the self design
    - fields: relative L2 error (1 is the same as predicting all zeros), also per quantity when there are several
    - `simp-fea` also: the peak von Mises stress error and the compliance error from the sum of the predicted energy
    - TopoDiff tests: `--data jobs/<data>/level_1.npz` gives TopoDiff's metrics (CE / VFE / LD / FM)

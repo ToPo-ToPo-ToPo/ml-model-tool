@@ -41,9 +41,9 @@ def read_json(path: str | Path) -> dict:
 
 
 def load_data_spec(path: str | Path) -> dict:
-    """Data spec with paths (``root`` / ``topodiff_repo``) made absolute from the spec's folder."""
+    """Data spec with paths (``root`` / ``topodiff_repo`` / ``julia_optopus``) made absolute from the spec's folder."""
     doc = read_json(path)
-    for key in ("root", "topodiff_repo"):
+    for key in ("root", "topodiff_repo", "julia_optopus"):
         if isinstance(doc.get(key), str) and doc[key]:
             doc[key] = str((Path(path).parent / Path(doc[key]).expanduser()).resolve())
     return doc
@@ -161,8 +161,8 @@ COMMANDS = Commands(prog="mmt", app=APP, module="ml_model_tool_cli.cli", root=AP
 COMMANDS.add(
     "data", help=("データセットを作る（SIMP・FEM で生成、または取り込み）", "make a dataset (generate by SIMP / FEM, or import)"),
     args=[Doc("spec", "ml-model-tool-data/1", validate=_check_data_spec, shape=DATA_SHAPE, stage="spec",
-              help=("データ仕様（JSON）。source: simp-topopt / fea-elastic / topodiff と、その鍵",
-                    "data spec (JSON): source (simp-topopt / fea-elastic / topodiff) and its keys"))],
+              help=("データ仕様（JSON）。source: simp-topopt / optopus-overhang / simp-fea / fea-elastic / topodiff と、その鍵",
+                    "data spec (JSON): source (simp-topopt / optopus-overhang / simp-fea / fea-elastic / topodiff) and its keys"))],
     description=("""学習用のデータセットをジョブフォルダに作る（`mmt data`）。
 
 source ごとの鍵と既定値は docs/specs.md と手順書 ml-model。出力は dataset.npz（x / y / split / aux_*）と
@@ -211,13 +211,14 @@ COMMANDS.add(
     description=("""学習済みモデルを予測させて正解と比べる（`mmt evaluate`）。
 
 密度: IoU・MAE・体積の誤差。場: 相対 L2 誤差。simp-topopt はさらに予測形状のコンプライアンスを FEM で解いて SIMP と比べる。
+optopus-overhang はさらにオーバーハング（ベースプレートから支えが続かず造れない材料）を出す。
 TopoDiff のテスト（level_<k>.npz）は TopoDiff の評価コードで CE / VFE / LD / FM を出す。図は compare.png。
 生成モデルは 1 条件から K 案を作り、上の数値は 1 案目で出す（FNO と比べられる）。加えて K 案の違い（diversity）と
 K 案の中で最も良い案の数値（best_of_k。topopt は FEM のコンプライアンスで選ぶ）を出す。""",
                  """Predict with a trained model and compare with the truth (`mmt evaluate`).
 
 Density: IoU, MAE, volume error. Fields: relative L2 error. simp-topopt also solves the predicted design by FEM and
-compares its compliance with SIMP. TopoDiff test levels (level_<k>.npz) get CE / VFE / LD / FM with TopoDiff's
+compares its compliance with SIMP; optopus-overhang also reports overhang (material that cannot be printed). TopoDiff test levels (level_<k>.npz) get CE / VFE / LD / FM with TopoDiff's
 analysis. Figure: compare.png. A generative model makes K designs per condition; the numbers above are of the first
 design (comparable with an FNO), plus the diversity of the K designs and best-of-K numbers (topopt picks by FEM
 compliance)."""),

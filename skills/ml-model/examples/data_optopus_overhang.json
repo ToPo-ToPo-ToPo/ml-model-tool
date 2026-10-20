@@ -1,0 +1,3 @@
+{"source": "optopus-overhang", "n": 600, "nelx": 64, "nely": 32, "volfrac": [0.3, 0.5],
+ "supports": ["cantilever", "both-ends", "pin-roller"], "build_directions": ["up"],
+ "julia_optopus": "", "iters": 100, "radius": 1.5, "n_test": 60, "n_val": 30, "seed": 0, "workers": 8}

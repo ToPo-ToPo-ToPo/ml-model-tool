@@ -5,7 +5,7 @@ running). Here the defaults are filled in and the values are checked.
 
 Data spec (``data --spec data.json``)::
 
-    {"source": "simp-topopt" | "fea-elastic" | "topodiff", ...keys of that source...}
+    {"source": "simp-topopt" | "optopus-overhang" | "simp-fea" | "fea-elastic" | "topodiff", ...keys of that source...}
 
 Model spec (``train --spec model.json --data <dataset>``); ``model.type`` picks the kind (default fno):
 ``fno`` gives one answer per condition; ``diffusion`` / ``flow`` / ``vae`` / ``gan`` are generative (many designs)::

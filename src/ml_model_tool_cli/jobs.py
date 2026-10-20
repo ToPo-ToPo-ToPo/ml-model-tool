@@ -189,6 +189,14 @@ def _headline(m: dict) -> list[str]:
         f = m["floating"]
         rows.append(f"- floating material: {f['share']:.0%} of designs (more than 1% of the material: "
                     f"{f['share_gt_1pct']:.0%})  mean share of the material {f['volume_mean']}")
+    if "overhang" in m:
+        o = m["overhang"]
+        rows.append(f"- overhang (material that cannot be printed): {o['share']:.0%} of designs (more than 1% of "
+                    f"the material: {o['share_gt_1pct']:.0%})  mean share of the material {o['volume_mean']}")
+    if "overhang_input" in m:
+        o = m["overhang_input"]
+        rows.append(f"  - the input designs: {o['share']:.0%} have overhang  mean share of the material "
+                    f"{o['volume_mean']}")
     if "topodiff" in m:
         t = m["topodiff"]
         rows.append(f"- TopoDiff metrics: CE mean {t['CE_mean']:.2%} median {t['CE_median']:.2%}  "
@@ -213,6 +221,10 @@ def _headline(m: dict) -> list[str]:
             f = g["floating_all"]
             rows.append(f"- all {g['samples']} designs: floating material {f['share']:.0%} "
                         f"(more than 1% of the material: {f['share_gt_1pct']:.0%})")
+        if "overhang_all" in g:
+            o = g["overhang_all"]
+            rows.append(f"- all {g['samples']} designs: overhang {o['share']:.0%} "
+                        f"(more than 1% of the material: {o['share_gt_1pct']:.0%})")
         if "CE_mean" in b:
             rows.append(f"- best of {g['samples']}: CE mean {b['CE_mean']:.2%} median {b['CE_median']:.2%}")
     return rows
@@ -241,6 +253,8 @@ def run_evaluate(model: str, data: str, split: str, out: str, samples: int = 0, 
                                   "compliance_error", "equilibrium_residual", "topodiff") if k in m}
         if "floating" in m:
             keep["floating_share"] = m["floating"]["share"]
+        if "overhang" in m:
+            keep["overhang_share"] = m["overhang"]["share"]
         summary = {"split": split, "model_type": bundle.kind,
                    **{k: (v["median"] if isinstance(v, dict) and "median" in v else v) for k, v in keep.items()}}
         g = m.get("generative") or {}

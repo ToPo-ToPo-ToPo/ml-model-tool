@@ -18,8 +18,8 @@ EXAMPLES = ROOT / "skills" / "ml-model" / "examples"
 def test_data_examples(path, tmp_path):
     doc = json.loads(path.read_text())
     check_shape(doc, DATA_SHAPE)
-    if doc["source"] == "topodiff":           # needs the real dataset folder; check the keys and defaults only
-        assert set(doc) <= set(SOURCES["topodiff"].SHAPE)
+    if doc["source"] in ("topodiff", "optopus-overhang"):   # need a dataset folder / Julia; keys only
+        assert set(doc) <= set(SOURCES[doc["source"]].SHAPE)
         return
     specs.data_spec(doc)
 
@@ -28,7 +28,8 @@ def test_data_examples(path, tmp_path):
 def test_model_examples(path):
     doc = json.loads(path.read_text())
     check_shape(doc, MODEL_SHAPE)
-    specs.model_spec(doc, SOURCES["simp-topopt"].X_CHANNELS, "density")
+    source = "optopus-overhang" if "overhang" in path.name else "simp-topopt"
+    specs.model_spec(doc, SOURCES[source].X_CHANNELS, "density")
 
 
 def test_skill_names_every_command():

@@ -17,7 +17,7 @@
 
 | コマンド | 内容 |
 |---|---|
-| `data --spec data.json` | 学習データを作る。`simp-topopt`（SIMP のトポロジー最適化）・`simp-fea`（最適化した形状の FEM 結果: 変位・ミーゼス応力・ひずみエネルギー）・`fea-elastic`（線形弾性 FEM の変位場）・`topodiff`（TopoDiff データセットの取り込み） |
+| `data --spec data.json` | 学習データを作る。`simp-topopt`（SIMP のトポロジー最適化）・`optopus-overhang`（最適化結果 → 自己支持で造れる最適化結果。積層造形。JuliaOptopus で解く）・`simp-fea`（最適化した形状の FEM 結果: 変位・ミーゼス応力・ひずみエネルギー）・`fea-elastic`（線形弾性 FEM の変位場）・`topodiff`（TopoDiff データセットの取り込み） |
 | `train --spec model.json --data <data のジョブ>` | モデルを学習する。`model.type` で `fno` か生成モデル（`diffusion` / `flow` / `vae` / `gan`）。入力チャネルの選択・学習件数・エポック数などを仕様で指定 |
 | `evaluate --model <train のジョブ> --data <データ>` | 正解との誤差、FEM で解いたコンプライアンス（トポロジー最適化）、TopoDiff の評価指標。生成モデルは 1 条件から K 案を作り、案の多様性と K 案中の最良も出す（`--samples` / `--steps`） |
 | `predict --model <train のジョブ> --data <データ>` | 予測（生成モデルは K 案を生成） |
@@ -59,10 +59,11 @@ uv run mmt evaluate --model jobs/diff1 --data jobs/data1 --samples 8 --out "$PWD
 
 ```text
 src/ml_model_tool/          ライブラリ
-  sources/                  データ仕様 → 標準データセット（simp_topopt / fea_elastic / topodiff）
+  sources/                  データ仕様 → 標準データセット（simp_topopt / optopus_overhang / simp_fea / fea_elastic / topodiff）
   dataset.py                標準データセット（dataset.npz + dataset.json）
   spec.py                   データ仕様・モデル仕様の既定値と検査
   fem.py                    2D 線形弾性 FEM と SIMP（top88 相当）
+  overhang.py               積層造形で造れるか（オーバーハング）の判定
   model.py / training.py    モデルの構築・保存、学習ループ（全種類で共通）
   generative.py             生成モデル（拡散・Flow matching・VAE・GAN）の損失と生成
   nets.py                   VAE・GAN のネットワーク（潜在ベクトルで動く U-Net・encoder・識別器）

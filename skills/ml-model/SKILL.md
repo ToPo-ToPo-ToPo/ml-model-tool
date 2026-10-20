@@ -37,9 +37,13 @@ description: 物理問題の機械学習モデル（PhysicsNeMo の FNO と、�
 
 ## 手順
 
-1. **データを作る**: `data.json` を書いて `data --spec data.json`。source は 3 つ（鍵の一覧は docs/specs.md）。
+1. **データを作る**: `data.json` を書いて `data --spec data.json`。source は 5 つ（鍵の一覧は docs/specs.md）。
    - `simp-topopt`: 長方形（既定 64×32）のトポロジー最適化。固定 3 種（cantilever / both-ends / pin-roller）、
      境界上の線荷重 1 本、体積率の範囲。入力 6 チャネル（volfrac, fix_x, fix_y, load_x, load_y, sed）→ 密度
+   - `optopus-overhang`: トポロジー最適化の結果 → サポート無しで造れる（自己支持。張り出し 45° まで）形。どちらも
+     JuliaOptopus で解く（free と self）。入力 7 チャネル（design, volfrac, fix_x, fix_y, load_x, load_y, base）→ 密度。
+     `build_directions` で造形の向き。`julia_optopus`（または環境変数 `JULIA_OPTOPUS`）に JuliaOptopus のフォルダ、
+     `workers` で並列数。生成モデルで「造れる形」を何案も作るためのデータ
    - `fea-elastic`: 正方形（既定 64×64）全面材料の線形弾性。線拘束 2 本・線荷重 1 本を領域のどこにでも置く。
      入力 5 チャネル（material, fix_x, fix_y, load_x, load_y）→ 変位 ux, uy
    - `simp-fea`: SIMP で最適化した形状（既定 64×32）に荷重ケースを `load_cases` 個かけて FEM を解く。
@@ -57,6 +61,8 @@ description: 物理問題の機械学習モデル（PhysicsNeMo の FNO と、�
    - 密度: IoU（0.5 で二値化した材料の重なり）・MAE・体積の誤差
    - `simp-topopt` はさらに、予測した形を FEM で解いたコンプライアンス ÷ SIMP（1 に近いほど良い。2 倍以上は破綻）と、
      浮いた材料（拘束までつながっていない材料。`floating.share` が浮いた材料を含む案の割合）
+   - `optopus-overhang`: さらに `overhang`（ベースプレートから支えが続かず造れない材料。`share` がそれを含む案の割合）と、
+     基準として入力の形の値 `overhang_input`。コンプライアンス比は self の結果との比
    - 場: 相対 L2 誤差（1 は「全部 0 と予測」と同じ）。量が複数なら量ごとにも出る
    - `simp-fea`: さらに最大ミーゼス応力の誤差と、予測した energy の合計から出したコンプライアンスの誤差
    - TopoDiff のテスト: `--data jobs/<data>/level_1.npz` で TopoDiff の評価（CE / VFE / LD / FM）
