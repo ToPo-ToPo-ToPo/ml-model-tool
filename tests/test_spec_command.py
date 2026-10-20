@@ -18,7 +18,9 @@ def test_spec_data_lists_the_sources(ws):
 
 
 @pytest.mark.parametrize("source", [s for s in SOURCES if s != "topodiff"])
-def test_spec_data_example_is_a_valid_spec(ws, source):
+def test_spec_data_example_is_a_valid_spec(ws, source, monkeypatch):
+    if source == "optopus-overhang":                  # needs Julia and a JuliaOptopus checkout; keys and values only
+        monkeypatch.setattr(SOURCES[source], "check", lambda spec: None)
     res = COMMANDS.type_line(f"spec data --source {source}", ws)
     assert res["ok"] and {k["key"] for k in res["keys"]} == {k.name for k in SOURCES[source].KEYS}
     assert specs.data_spec(res["example"])["source"] == source

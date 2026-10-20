@@ -24,7 +24,7 @@
 
 | 項目 | 状態 |
 |---|---|
-| コード（2 つのリポジトリ） | できている。テスト 68 件すべて通過（本物の JuliaOptopus を使う小さな試験を含む） |
+| コード（2 つのリポジトリ） | できている。テスト 95 件すべて通過（本物の JuliaOptopus を使う試験を含む。2026-10-20） |
 | 600 件のデータ作成 | **未完**。33 件で止めた（他の計算を優先するため）。結果は保存されていない |
 | 学習・評価 | 未実施（JuliaOptopus のデータでは） |
 | 計算が遅い問題 | 解決（2026-10-20）。下の「4.1」 |
@@ -56,7 +56,7 @@
 | `main/linear_elasticity/TO/am_overhang/ml_dataset.jl`（新規） | 教師データ作成のドライバ。条件の npz を読み、1 件ごとに free と self を解き、結果を npz に書く |
 | `main/INDEX.md` | `tools/main_index.jl` で再生成（main で既にずれていた他の行も更新された） |
 
-## 4. 既知の問題（4.1 は解決済み）
+## 4. 既知の問題（4.1・4.2 は解決済み）
 
 ### 4.1 計算がとても遅い（2026-10-20 解決）
 
@@ -81,11 +81,16 @@
 
 参考: 収束までの反復は free が 50 回前後、self は 100 回（上限）に届くことが多い。
 
-### 4.2 途中で止めると結果が全部消える
+### 4.2 途中で止めると結果が全部消える（2026-10-20 解決）
 
-`ml_dataset.jl` は担当分を全部解いてから最後に 1 回だけ npz を書く。途中で止めるとそのプロセスの分が全部消える。
-**1 件ごとに保存し、再開時は済んだ件を飛ばす**形に直すとよい（`ml_dataset.jl` と `optopus_overhang.py` の
-`run_optopus`）。
+`ml_dataset.jl` に `outdir=` を足し、1 件解くごとに `outdir/case_<番号>.npz` を書くようにした（一時ファイルに
+書いてから名前を変えるので、書いている途中で止めても壊れたファイルは残らない）。既にある件は飛ばす。
+`optopus_overhang.py` の `run_optopus` は `--out` の下の `optopus/cases/` を見て、まだ無い件だけを各プロセスに
+1 件おきに配り、最後に全件を集める。
+
+- 止めるのは Ctrl-C でも `kill` でもよい（どちらも Julia のプロセスまで止まる）。同じ仕様・同じ `--out` で
+  もう一度 `mmt data` を走らせれば続きから解く（試験: 24 件のうち 6 件で止め、再実行で残りの 18 件だけを解いた）
+- 条件（件数・seed など）や `iters`・`radius` を変えると、保存済みの件を消して最初から解く
 
 ### 4.3 その他
 
@@ -174,7 +179,9 @@ uv run --project $MMT mmt data --spec data.json --out "$PWD/jobs/data1"
 
 - 主なキー: `n`（件数）・`nelx` / `nely`（64×32）・`build_directions`（既定 `["up"]`）・`iters`（100）・
   `radius`（1.5）・`workers`。全部のキーは `$MMT/docs/specs.md` の `optopus-overhang` の節
-- 進み具合は `jobs/data1/status.json`、Julia のログは `jobs/data1/optopus/optopus_<k>.log`
+- 進み具合は `jobs/data1/status.json`、Julia のログは `jobs/data1/optopus/optopus_<k>.log`、解いた件は
+  `jobs/data1/optopus/cases/case_<番号>.npz`
+- 途中で止めても、同じコマンドをもう一度走らせれば続きから解く（4.2）
 - できたら `jobs/data1/summary.md` を見る。確かめる値: `overhang_target_mean`（正解のオーバーハング。ほぼ 0）・
   `overhang_input_mean`（入力のオーバーハング）・`compliance_fem_vs_optopus_max_rel_diff`（1% 未満のはず）
 
@@ -225,7 +232,7 @@ IoU 中央値 0.84、コンプライアンス比 中央値 1.14（2 倍超が 10
 ## 8. 次にやること
 
 1. ~~速度の原因を調べて直す（4.1）~~ 済み（2026-10-20）
-2. 1 件ごとに保存する形に直す（4.2）
+2. ~~1 件ごとに保存する形に直す（4.2）~~ 済み（2026-10-20）
 3. 600 件のデータを作る（6.2）
 4. 拡散モデルを 200 エポックで学習・評価する（6.3）。7 の Python 版の結果と比べる
 5. 残るオーバーハングが多ければ、データを増やす・後処理で消すなどを検討する

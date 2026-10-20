@@ -10,6 +10,7 @@ Both use the settings of JuliaOptopus's ``free`` / ``self`` modes (quad4 element
 filter r = ``radius`` x h, Heaviside projection beta = 5, p = 3, MMA, at most ``iters`` iterations).
 
 The cases are split over ``workers`` Julia processes (each compiles JuliaOptopus first, about a minute).
+Every case is saved as soon as it is solved: running the same spec into the same ``--out`` again resumes.
 ``julia_optopus`` is the JuliaOptopus folder (or the environment variable ``JULIA_OPTOPUS``).
 
 x channels (element grid ``(nely, nelx)``):
@@ -28,7 +29,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -102,38 +105,63 @@ def make_cases(spec: dict) -> dict:
             "build": np.asarray(builds, np.int64), "kinds": kinds}
 
 
+CASE_KEYS = ("fix", "load", "volfrac", "build")
+
+
+def _same_cases(path: Path, want: dict) -> bool:
+    if not path.is_file():
+        return False
+    with np.load(path) as old:
+        return set(old.files) == set(want) and all(np.array_equal(old[k], want[k]) for k in want)
+
+
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
-    """Solve the cases with JuliaOptopus in ``workers`` processes; returns the merged results."""
+    """Solve the cases with JuliaOptopus in ``workers`` processes; returns the merged results.
+
+    Each case is saved as ``work/cases/case_<i>.npz`` as soon as it is solved, so a run stopped partway
+    resumes where it stopped when started again with the same spec and ``--out`` (only the missing cases
+    are solved). A different spec (other cases or settings) starts over."""
     root = optopus_root(spec)
     work.mkdir(parents=True, exist_ok=True)
-    np.savez(work / "cases.npz", **{k: cases[k] for k in ("fix", "load", "volfrac", "build")})
+    parts = work / "cases"
+    want = {**{k: cases[k] for k in CASE_KEYS}, "iters": np.asarray(spec["iters"]),
+            "radius": np.asarray(float(spec["radius"]))}
+    if not _same_cases(work / "cases.npz", want):
+        shutil.rmtree(parts, ignore_errors=True)
+        np.savez(work / "cases.npz", **want)
+    parts.mkdir(exist_ok=True)
     n = spec["n"]
-    workers = max(1, min(int(spec["workers"]), n, os.cpu_count() or 1))
-    per = -(-n // workers)
+    todo = [i for i in range(n) if not (parts / f"case_{i}.npz").is_file()]
+    workers = max(1, min(int(spec["workers"]), len(todo), os.cpu_count() or 1))
     procs, logs = [], []
+    # kill (SIGTERM) stops the Julia processes too, as Ctrl-C does; the solved cases stay for a resume
+    old_term = (signal.signal(signal.SIGTERM, _interrupt)
+                if threading.current_thread() is threading.main_thread() else None)
     try:
-        for w in range(workers):
-            first = w * per
-            if first >= n:
-                break
+        for w in range(workers if todo else 0):
+            mine = np.asarray(todo[w::workers])        # interleaved: neighbouring cases take similar times
+            np.savez(work / f"todo_{w}.npz", **{k: cases[k][mine] for k in CASE_KEYS}, index=mine)
             log = open(work / f"optopus_{w}.log", "w")
-            cmd = ["julia", f"--project={root}", "-t", "1", str(root / DRIVER), f"cases={work / 'cases.npz'}",
-                   f"out={work / f'result_{w}.npz'}", f"first={first + 1}", f"count={min(per, n - first)}",
-                   f"iters={spec['iters']}", f"radius={float(spec['radius'])}", "design=element"]
+            cmd = ["julia", f"--project={root}", "-t", "1", str(root / DRIVER), f"cases={work / f'todo_{w}.npz'}",
+                   f"outdir={parts}", f"iters={spec['iters']}", f"radius={float(spec['radius'])}",
+                   "design=element"]
             # one core per worker. JuliaOptopus raises BLAS to every core around each sparse direct solve
             # unless JULIAOPTOPUS_BLAS_THREADS is set (LinearAlgebraKit/parallel_blas.jl): with several
             # workers that oversubscribes the cores and a case takes minutes instead of seconds
             env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "JULIAOPTOPUS_BLAS_THREADS": "1"}
             procs.append(subprocess.Popen(cmd, cwd=work, stdout=log, stderr=subprocess.STDOUT, env=env))
             logs.append(log)
-        done_before = -1
+        before, done_before = n - len(todo), -1
         while any(p.poll() is None for p in procs):
             time.sleep(5)
-            done = sum((work / f"optopus_{w}.log").read_text(errors="replace").count("[ml_dataset] case")
-                       for w in range(len(procs)))
+            done = sum(1 for _ in parts.glob("case_*.npz"))
             if done != done_before:
                 progress(0.95 * done / n, f"JuliaOptopus free + self {done}/{n}"
-                         + (" (compiling JuliaOptopus)" if done == 0 else ""))
+                         + (" (compiling JuliaOptopus)" if done == before else ""))
                 done_before = done
         bad = [w for w, p in enumerate(procs) if p.returncode != 0]
         if bad:
@@ -146,8 +174,16 @@ def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
                 p.terminate()
         for f in logs:
             f.close()
-    parts = [dict(np.load(work / f"result_{w}.npz")) for w in range(len(procs))]
-    out = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+        if old_term is not None:
+            signal.signal(signal.SIGTERM, old_term)
+    missing = [i for i in range(n) if not (parts / f"case_{i}.npz").is_file()]
+    if missing:
+        raise RuntimeError(f"JuliaOptopus left {len(missing)} cases unsolved (first: {missing[0]})")
+    res = []
+    for i in range(n):
+        with np.load(parts / f"case_{i}.npz") as f:
+            res.append({k: f[k] for k in f.files})
+    out = {k: (np.stack if res[0][k].ndim == 2 else np.concatenate)([r[k] for r in res]) for k in res[0]}
     if not np.array_equal(out["index"], np.arange(n)):
         raise RuntimeError("JuliaOptopus results do not cover every case once")
     return out

@@ -101,3 +101,16 @@ def test_julia_optopus_solves_cases(tmp_path):
     assert m["overhang_target_mean"] < 0.01 < m["overhang_input_mean"] and m["optopus_floating_target_max"] < 0.05
     assert m["compliance_fem_vs_optopus_max_rel_diff"] < 0.02          # the same FEM on the same image
     assert 0 <= ds.y.min() and ds.y.max() <= 1
+
+    # a run stopped partway resumes: only the cases without a saved result are solved again
+    work = tmp_path / "d" / "optopus"
+    for i in (1, 4, 7):
+        (work / "cases" / f"case_{i}.npz").unlink()
+    _done(jobs.run_data(spec, str(tmp_path / "d")))
+    solved = sum(p.read_text().count("[ml_dataset] case") for p in work.glob("optopus_*.log"))
+    again = dataset.load(tmp_path / "d")
+    assert solved == 3 and np.allclose(again.x, ds.x) and np.allclose(again.y, ds.y)
+    # other settings start over
+    other = specs.data_spec({**OVERHANG_SPEC, "iters": 5, "workers": 2})
+    _done(jobs.run_data(other, str(tmp_path / "d")))
+    assert sum(p.read_text().count("[ml_dataset] case") for p in work.glob("optopus_*.log")) == 10
