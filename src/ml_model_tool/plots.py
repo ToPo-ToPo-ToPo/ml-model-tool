@@ -90,6 +90,28 @@ def compare(path, x: np.ndarray, x_channels: list[str], pred: np.ndarray, truth:
     plt.close(fig)
 
 
+def side_by_side(path, x: np.ndarray, x_channels: list[str], truth: Optional[np.ndarray], cols: list,
+                 y_kind: str, title: str) -> None:
+    """One row per case: truth (if any), then one column per model. ``cols`` is [(name, (N, H, W))]."""
+    plt = _plt()
+    n = len(x)
+    ncol = len(cols) + (1 if truth is not None else 0)
+    h, w = cols[0][1].shape[1:]
+    row = 2.6 * h / w + 0.35                       # panel height from the grid's aspect, plus the title
+    fig, axes = plt.subplots(n, ncol, figsize=(2.6 * ncol + 0.4, row * n + 0.6), squeeze=False, facecolor="white")
+    for i in range(n):
+        vmax = np.abs(truth[i]).max() if truth is not None and y_kind != "density" else None
+        panels = ([("truth", truth[i])] if truth is not None else []) + [(name, img[i]) for name, img in cols]
+        for c, (name, img) in enumerate(panels):
+            _show(axes[i, c], img, y_kind, vmax)
+            _overlay(axes[i, c], x[i], x_channels)
+            axes[i, c].set_title((f"case {i + 1}  " if c == 0 else "") + name, fontsize=8, loc="left", color=INK)
+    fig.suptitle(title, x=0.01, ha="left", fontsize=10, color=INK)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
 def samples(path, x: np.ndarray, x_channels: list[str], y: Optional[np.ndarray], y_channels: list[str],
             y_kind: str, title: str, n: int = 6) -> None:
     """Preview of a dataset: the first n samples (all input channels and the targets)."""

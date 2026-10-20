@@ -22,7 +22,8 @@ The design is used as SIMP leaves it (densities in [0, 1], E = Emin + x^3 (1 - E
     y  ux, uy at the nodes (y up)
     The equilibrium K(rho) u = F can then be checked on a prediction (``physics.py``; ``train.physics``
     adds it to the loss), and stress, energy and compliance follow from the predicted displacement.
-aux: fix, load (node images), compliance, design (the index of the design), density (the element image)
+aux: fix, load (node images), compliance, design (the index of the design), density (the element image);
+     support, load_kind (0 = the optimized load, 1 = a new one) — to break results down by (``groups``)
 """
 from __future__ import annotations
 
@@ -33,26 +34,26 @@ import numpy as np
 
 from .. import dataset
 from ..fem import FEM, density_filter, dofs_to_node_image, node_masks_to_dofs, simp
-from .simp_topopt import SUPPORTS, _node_to_element, features, random_case
+from ..keys import Int, Key
+from .common import SUPPORTS, n_key, simp_keys, split_keys, target_key
+from .simp_topopt import _node_to_element, features, random_case
 
-SHAPE = ["source", "n", "load_cases", "target", "nelx", "nely", "volfrac", "supports", "load_nodes", "n_test", "n_val",
-         "seed", "rmin", "maxiter", "workers"]
-DEFAULTS = {"n": 1000, "load_cases": 4, "target": "fields", "nelx": 64, "nely": 32, "volfrac": [0.3, 0.5], "supports": list(SUPPORTS),
-            "load_nodes": [2, 3], "n_test": 100, "n_val": 50, "seed": 0, "rmin": 1.5, "maxiter": 200, "workers": 1}
+ABOUT = ("SIMP で最適化した形状の FEM 結果（FEM のサロゲート）。形状・拘束・荷重 → 変位・応力・ひずみエネルギー",
+         "FEM results on SIMP-optimized designs (an FEM surrogate): design, supports, load -> displacement, stress, energy")
+TARGETS = ("fields", "displacement")
+KEYS = [n_key(1000, ("形状の数（1 つごとに SIMP を最後まで回す）。件数 = n × load_cases",
+                     "designs (SIMP runs to the end for each); samples = n x load_cases")),
+        Key("load_cases", 4, Int(1, 16), ("1 形状にかける荷重ケースの数。1 つ目は最適化に使った荷重、残りは材料に接する境界上の新しい線荷重",
+                                          "loads analysed per design: the first is the optimized load, the others new "
+                                          "line loads on the boundary next to material")),
+        target_key(TARGETS, "fields", ("学ぶもの。fields: 要素の格子の ux・uy・von_mises・energy。displacement: 節点の格子の ux・uy"
+                                       "（FEM の未知数そのもの。train.physics を使える）",
+                                       "what is learned. fields: ux, uy, von_mises, energy on the element grid. "
+                                       "displacement: ux, uy on the node grid (the FEM unknowns; train.physics works)")),
+        *simp_keys(), *split_keys(100, 50, ("形状の", "designs"))]
 X_CHANNELS = ["density", "fix_x", "fix_y", "load_x", "load_y"]
 Y_CHANNELS = ["ux", "uy", "von_mises", "energy"]
-TARGETS = ("fields", "displacement")
 PHYSICS = {"penal": 3.0, "emin": 1e-9, "nu": 0.3}         # the FEM's material model (fem.FEM's defaults)
-
-
-def check(spec: dict) -> None:
-    from .simp_topopt import check as check_simp
-
-    check_simp(spec)
-    if not (isinstance(spec["load_cases"], int) and 1 <= spec["load_cases"] <= 16):
-        raise ValueError("load_cases must be 1-16 (loads analysed per design)")
-    if spec["target"] not in TARGETS:
-        raise ValueError(f"target must be one of {', '.join(TARGETS)}")
 
 
 def random_load(rng, fix: np.ndarray, design: np.ndarray, load_nodes) -> np.ndarray:
@@ -136,11 +137,13 @@ def generate(spec: dict, out_dir, progress) -> dict:
     meta = {"source": "simp-fea", "task": "fea", "x_channels": X_CHANNELS,
             "y_channels": ["ux", "uy"] if nodal else Y_CHANNELS, "y_kind": "field",
             "grid": {"nelx": spec["nelx"], "nely": spec["nely"], "on": "nodes" if nodal else "elements"},
-            "physics": PHYSICS, "params": spec}
+            "physics": PHYSICS, "groups": {"support": list(SUPPORTS), "load_kind": ["optimized", "new"]}, "params": spec}
     dataset.save(out_dir, np.stack(xs), np.stack(ys), split, meta,
                  aux={"fix": np.stack(fixes).astype(np.float32), "load": np.stack(loads).astype(np.float32),
                       "compliance": np.asarray(comps, np.float64), "design": np.asarray(designs, np.int32),
-                      "density": np.stack(rhos).astype(np.float32)})
+                      "density": np.stack(rhos).astype(np.float32),
+                      "support": np.repeat([SUPPORTS.index(k) for k in kinds], L).astype(np.int8),
+                      "load_kind": np.tile((np.arange(L) > 0).astype(np.int8), n)})
     c = np.asarray(comps)
     return {"samples": n * L, "designs": n, "load_cases": L, "grid": f"{spec['nelx']}x{spec['nely']}",
             "compliance_median": round(float(np.median(c)), 3), "compliance_p90": round(float(np.percentile(c, 90)), 3),

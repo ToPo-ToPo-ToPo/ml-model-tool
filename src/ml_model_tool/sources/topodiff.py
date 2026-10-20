@@ -24,22 +24,36 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import dataset
+from agk.lang import tr
 
-SHAPE = ["source", "root", "limit", "levels", "topodiff_repo", "n_test", "n_val", "seed"]
-DEFAULTS = {"limit": 0, "levels": [1, 2], "topodiff_repo": "", "n_test": 300, "n_val": 300, "seed": 0}
+from .. import dataset
+from ..keys import REQUIRED, Int, Key, SpecError, Subset, Text
+from .common import split_keys
+
+ABOUT = ("TopoDiff のデータセット（Mazé & Ahmed 2023）の取り込み。条件 → 密度（64×64）",
+         "import of the TopoDiff dataset (Mazé & Ahmed 2023): conditions -> density (64x64)")
+KEYS = [Key("root", REQUIRED, Text(), ("dataset_1_diff のフォルダ（仕様ファイルからの相対か絶対）",
+                                       "the dataset_1_diff folder (relative to the spec file, or absolute)")),
+        Key("limit", 0, Int(0), ("学習データの先頭から使う件数（0 = 全部、約 3 万件）",
+                                 "training samples to use from the start (0 = all, about 30,000)")),
+        Key("levels", [1, 2], Subset((1, 2), empty=True),
+            ("取り込むテスト（level_<k>.npz。正解の形は無く、SIMP のコンプライアンスだけ）",
+             "test levels to import (level_<k>.npz; no target designs, only the SIMP compliance)")),
+        Key("topodiff_repo", "", Text(), ("github.com/francoismaze/topodiff のクローン（テストを TopoDiff の評価で測るとき必須）",
+                                          "a clone of github.com/francoismaze/topodiff (needed to evaluate the test levels)")),
+        *split_keys(300, 300)]
 X_CHANNELS = ["volfrac", "sed", "von_mises", "load_x", "load_y"]
+Y_CHANNELS = ["density"]
 
 
 def check(spec: dict) -> None:
     root = Path(spec["root"])
     if not (root / "training_data").is_dir():
-        raise ValueError(f"root must be the dataset_1_diff folder (training_data/ not found in {root})")
-    for lv in spec["levels"]:
-        if lv not in (1, 2):
-            raise ValueError("levels: 1 and/or 2")
+        raise SpecError("root", tr(f"dataset_1_diff のフォルダではない（{root} に training_data/ が無い）",
+                                   f"not the dataset_1_diff folder (training_data/ not found in {root})"))
     if spec["levels"] and spec["topodiff_repo"] and not (Path(spec["topodiff_repo"]) / "topodiff").is_dir():
-        raise ValueError(f"topodiff_repo must be a clone of github.com/francoismaze/topodiff: {spec['topodiff_repo']}")
+        raise SpecError("topodiff_repo", tr(f"github.com/francoismaze/topodiff のクローンではない: {spec['topodiff_repo']}",
+                                            f"not a clone of github.com/francoismaze/topodiff: {spec['topodiff_repo']}"))
 
 
 def _indices(directory: Path, prefix: str, ext: str) -> list[int]:
@@ -76,7 +90,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
         if (k + 1) % max(1, n // 50) == 0 or k + 1 == n:
             progress(0.9 * (k + 1) / n, f"training_data {k + 1}/{n}")
     split = dataset.make_split(n, min(spec["n_test"], n // 10), min(spec["n_val"], n // 10), spec["seed"])
-    meta = {"source": "topodiff", "task": "topopt-topodiff", "x_channels": X_CHANNELS, "y_channels": ["density"],
+    meta = {"source": "topodiff", "task": "topopt-topodiff", "x_channels": X_CHANNELS, "y_channels": Y_CHANNELS,
             "y_kind": "density", "grid": {"nelx": 64, "nely": 64, "on": "elements"}, "params": spec}
     dataset.save(out_dir, np.stack(xs), np.stack(ys), split, meta)
     levels = {}
@@ -91,7 +105,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
                   "VF": float(s["VF"])} for s in summary]
         (Path(out_dir) / f"level_{lv}_cases.json").write_text(json.dumps(cases), encoding="utf-8")
         lmeta = {"source": "topodiff", "task": "topodiff-level", "level": lv, "x_channels": X_CHANNELS,
-                 "y_channels": ["density"], "y_kind": "density", "grid": meta["grid"],
+                 "y_channels": Y_CHANNELS, "y_kind": "density", "grid": meta["grid"],
                  "params": {**spec, "cases": f"level_{lv}_cases.json"}}
         dataset.save(out_dir, _conditions(d, lidx), None, np.full(len(lidx), dataset.SPLITS["test"], np.int8),
                      lmeta, aux={"compliance": compliance.astype(np.float64)}, name=f"level_{lv}")

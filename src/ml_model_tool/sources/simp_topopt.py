@@ -11,7 +11,8 @@ x channels (element grid ``(nely, nelx)``):
     sed       strain energy density of the fully solid domain under the same load
               (one FEM solve; log(sed / mean), clipped to [-10, 10], divided by 5)
 y channels: density (SIMP result, 1 = material)
-aux: fix, load (node images), volfrac, compliance (of the SIMP design) — used by the evaluation
+aux: fix, load (node images), volfrac, compliance (of the SIMP design) — used by the evaluation;
+     support (index into SUPPORTS) — to break results down by (``groups``)
 """
 from __future__ import annotations
 
@@ -22,27 +23,14 @@ import numpy as np
 
 from .. import dataset
 from ..fem import FEM, density_filter, node_masks_to_dofs, simp
+from .common import SUPPORTS, n_key, simp_keys, split_keys
 
-SUPPORTS = ("cantilever", "both-ends", "pin-roller")
-SHAPE = ["source", "n", "nelx", "nely", "volfrac", "supports", "load_nodes", "n_test", "n_val", "seed",
-         "rmin", "maxiter", "workers"]
-DEFAULTS = {"n": 600, "nelx": 64, "nely": 32, "volfrac": [0.3, 0.5], "supports": list(SUPPORTS),
-            "load_nodes": [2, 3], "n_test": 60, "n_val": 30, "seed": 0, "rmin": 1.5, "maxiter": 200, "workers": 1}
+ABOUT = ("SIMP のトポロジー最適化（コンプライアンス最小化）の結果。条件（体積率・拘束・荷重）→ 密度",
+         "optimal topologies by SIMP (compliance minimization): conditions (volume fraction, supports, load) -> density")
+KEYS = [n_key(600, ("件数（1 件ごとに SIMP を最後まで回す。64×32 で数秒）", "samples (SIMP runs to the end for each; seconds at 64x32)")),
+        *simp_keys(), *split_keys(60, 30)]
 X_CHANNELS = ["volfrac", "fix_x", "fix_y", "load_x", "load_y", "sed"]
-
-
-def check(spec: dict) -> None:
-    if not (8 <= spec["nelx"] <= 512 and 8 <= spec["nely"] <= 512):
-        raise ValueError("nelx / nely must be between 8 and 512")
-    lo, hi = spec["volfrac"]
-    if not 0.05 <= lo <= hi <= 0.95:
-        raise ValueError("volfrac is [min, max] with 0.05 <= min <= max <= 0.95")
-    bad = [s for s in spec["supports"] if s not in SUPPORTS]
-    if bad or not spec["supports"]:
-        raise ValueError(f"supports: unknown {bad} (usable: {', '.join(SUPPORTS)})")
-    a, b = spec["load_nodes"]
-    if not 2 <= a <= b <= 8:
-        raise ValueError("load_nodes is [min, max] with 2 <= min <= max <= 8 (no point loads)")
+Y_CHANNELS = ["density"]
 
 
 def random_case(rng, nelx: int, nely: int, supports, load_nodes):
@@ -125,12 +113,13 @@ def generate(spec: dict, out_dir, progress) -> dict:
         if pool:
             pool.shutdown(cancel_futures=True)
     split = dataset.make_split(n, spec["n_test"], spec["n_val"], spec["seed"])
-    meta = {"source": "simp-topopt", "task": "topopt", "x_channels": X_CHANNELS, "y_channels": ["density"],
+    meta = {"source": "simp-topopt", "task": "topopt", "x_channels": X_CHANNELS, "y_channels": Y_CHANNELS,
             "y_kind": "density", "grid": {"nelx": spec["nelx"], "nely": spec["nely"], "on": "elements"},
-            "params": spec}
+            "groups": {"support": list(SUPPORTS)}, "params": spec}
     dataset.save(out_dir, np.stack(xs), np.stack(ys), split, meta,
                  aux={"fix": np.stack(fixes).astype(np.float32), "load": np.stack(loads).astype(np.float32),
-                      "volfrac": np.asarray(vfs, np.float32), "compliance": np.asarray(comps, np.float64)})
+                      "volfrac": np.asarray(vfs, np.float32), "compliance": np.asarray(comps, np.float64),
+                      "support": np.asarray([SUPPORTS.index(k) for k in kinds], np.int8)})
     return {"samples": n, "grid": f"{spec['nelx']}x{spec['nely']}",
             "simp_iterations_mean": round(float(np.mean(iters)), 1),
             "supports": {k: kinds.count(k) for k in spec["supports"]}}
