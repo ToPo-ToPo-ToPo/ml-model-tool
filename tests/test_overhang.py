@@ -91,6 +91,26 @@ def test_optopus_overhang_generative_pipeline(tmp_path, monkeypatch):
     assert (tmp_path / "e" / "compare.png").is_file()
 
 
+def test_binarize_thresholds_only_the_target(tmp_path, monkeypatch):
+    def gray(spec, cases, work, progress):                  # the stand-in with gray left in both designs
+        res = _stand_in(spec, cases, work, progress)
+        res["free"] = 0.6 * res["free"] + 0.2
+        res["self"] = 0.7 * res["self"] + 0.3 * (1 - res["self"]) * 0.9     # 0.7 on the base layer, 0.27 elsewhere
+        return res
+
+    monkeypatch.setattr(optopus_overhang, "run_optopus", gray)
+    monkeypatch.setattr(optopus_overhang, "check", lambda spec: None)
+    _done(jobs.run_data(specs.data_spec({**OVERHANG_SPEC, "binarize": True}), str(tmp_path / "d")))
+    ds = dataset.load(tmp_path / "d")
+    assert set(np.unique(ds.y)) == {0.0, 1.0} and len(np.unique(ds.x[:, 0])) == 2       # the input keeps its gray
+    fem = optopus_overhang.FEM(16, 8)
+    fixed, F = optopus_overhang.node_masks_to_dofs(ds.aux["fix"][0], ds.aux["load"][0])
+    assert ds.aux["compliance"][0] == pytest.approx(fem.compliance(ds.y[0, 0].astype(float), F, fixed))
+    m = json.loads((tmp_path / "d" / "metrics.json").read_text())
+    assert m["binarize"] is True and 0 < m["binarize_compliance_ratio_median"] < np.inf
+    assert m["binarize_volume_change_min"] < 0 and m["overhang_target_mean"] == 0
+
+
 @pytest.mark.skipif(not os.environ.get("JULIA_OPTOPUS"), reason="set JULIA_OPTOPUS to a JuliaOptopus checkout")
 def test_julia_optopus_solves_cases(tmp_path):
     spec = specs.data_spec({**OVERHANG_SPEC, "iters": 30, "workers": 2})

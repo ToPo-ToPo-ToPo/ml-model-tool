@@ -19,7 +19,7 @@ x channels (element grid ``(nely, nelx)``):
     fix_x, fix_y   1 where an element touches a node fixed in x / y
     load_x, load_y the load on the nodes of the element (sum of its corner nodes)
     base           1 on the layer that lies on the base plate (gives the build direction)
-y channels: density (the self design, 1 = material)
+y channels: density (the self design, 1 = material; with ``binarize`` thresholded at 0.5)
 aux: fix, load (node images), volfrac, compliance (of the self design by ``fem.FEM``, the solver the
      evaluation uses), design_compliance (of the free design), build (index in
      ``overhang.BUILD_DIRECTIONS``), optopus_compliance (JuliaOptopus's own value for the self design);
@@ -41,7 +41,7 @@ from agk.lang import tr
 
 from .. import dataset
 from ..fem import FEM, node_masks_to_dofs
-from ..keys import Int, Key, Num, SpecError, Subset, Text
+from ..keys import Bool, Int, Key, Num, SpecError, Subset, Text
 from ..overhang import BUILD_DIRECTIONS, base_plate, overhang_volume
 from .common import SUPPORTS, n_key, simp_keys, split_keys
 from .simp_topopt import _node_to_element, random_case
@@ -64,6 +64,11 @@ KEYS = [n_key(600, ("件数（1 件ごとに JuliaOptopus で最適化を 2 回�
         Key("iters", 100, Int(1, 10000), ("1 回の最適化の MMA の反復の上限（収束したら早く終わる）",
                                           "MMA iteration limit per optimization (stops early when converged)")),
         Key("radius", 1.5, Num(1, 6), ("密度フィルタの半径（要素数）", "density filter radius (elements)")),
+        Key("binarize", False, Bool(),
+            ("正解（self）を密度 0.5 で白黒にする（0.5 以上を 1）。入力（free）はそのまま。評価の判定も 0.5 なので、"
+             "オーバーハング・浮きは変わらない",
+             "binarize the target (self) at density 0.5 (>= 0.5 -> 1); the input (free) stays as it is. The "
+             "evaluation also thresholds at 0.5, so overhang and floating material do not change")),
         Key("workers", 4, Int(1, 256), ("並列に走らせる Julia のプロセス数（それぞれ最初に JuliaOptopus をコンパイルする）",
                                         "parallel Julia processes (each compiles JuliaOptopus first)")),
         *split_keys(60, 30)]
@@ -205,9 +210,10 @@ def generate(spec: dict, out_dir, progress) -> dict:
     t0 = time.time()
     res = run_optopus(spec, cases, Path(out_dir) / "optopus", progress)
     minutes = (time.time() - t0) / 60
-    free, target = np.clip(res["free"], 0, 1), np.clip(res["self"], 0, 1)
+    free, gray_target = np.clip(res["free"], 0, 1), np.clip(res["self"], 0, 1)
+    target = (gray_target >= 0.5).astype(gray_target.dtype) if spec["binarize"] else gray_target
     fem = FEM(nelx, nely)
-    xs, comps, dcomps, oh_in, oh_out = [], [], [], [], []
+    xs, comps, gcomps, dcomps, oh_in, oh_out = [], [], [], [], [], []
     for i in range(n):
         fix, load = cases["fix"][i], cases["load"][i]
         direction = BUILD_DIRECTIONS[cases["build"][i]]
@@ -216,6 +222,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
                                   base_plate(nely, nelx, direction)[None]]))
         fixed, F = node_masks_to_dofs(fix, load)
         comps.append(fem.compliance(target[i], F, fixed))
+        gcomps.append(fem.compliance(gray_target[i], F, fixed) if spec["binarize"] else comps[-1])
         dcomps.append(fem.compliance(free[i], F, fixed))
         oh_in.append(overhang_volume(free[i], direction))
         oh_out.append(overhang_volume(target[i], direction))
@@ -225,15 +232,23 @@ def generate(spec: dict, out_dir, progress) -> dict:
             "y_kind": "density", "grid": {"nelx": nelx, "nely": nely, "on": "elements"},
             "build_directions": list(BUILD_DIRECTIONS), "solver": "JuliaOptopus (free / self)",
             "groups": {"support": list(SUPPORTS), "build": list(BUILD_DIRECTIONS)}, "params": spec}
-    comps, dcomps = np.asarray(comps), np.asarray(dcomps)
+    comps, gcomps, dcomps = np.asarray(comps), np.asarray(gcomps), np.asarray(dcomps)
     dataset.save(out_dir, np.stack(xs), target[:, None], split, meta,
                  aux={"fix": cases["fix"].astype(np.float32), "load": cases["load"].astype(np.float32),
                       "volfrac": cases["volfrac"].astype(np.float32), "compliance": comps,
                       "design_compliance": dcomps, "build": cases["build"].astype(np.int8),
                       "optopus_compliance": res["self_compliance"],
                       "support": np.asarray([SUPPORTS.index(k) for k in cases["kinds"]], np.int8)})
-    agree = np.abs(comps / res["self_compliance"] - 1)
-    return {"samples": n, "grid": f"{nelx}x{nely}", "minutes": round(minutes, 1),
+    agree = np.abs(gcomps / res["self_compliance"] - 1)        # the same FEM on JuliaOptopus's own image
+    binary = {}
+    if spec["binarize"]:
+        dv = target.mean((1, 2)) - gray_target.mean((1, 2))
+        binary = {"binarize_volume_change_median": round(float(np.median(dv)), 4),
+                  "binarize_volume_change_min": round(float(dv.min()), 4),
+                  "binarize_compliance_ratio_median": round(float(np.median(comps / gcomps)), 4),
+                  "binarize_compliance_ratio_max": round(float(np.max(comps / gcomps)), 4)}
+    return {"samples": n, "grid": f"{nelx}x{nely}", "minutes": round(minutes, 1), "binarize": spec["binarize"],
+            **binary,
             "overhang_input_mean": round(float(np.mean(oh_in)), 4),
             "overhang_input_share": round(float(np.mean(np.asarray(oh_in) > 0)), 3),
             "overhang_target_mean": round(float(np.mean(oh_out)), 4),

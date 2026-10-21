@@ -53,6 +53,7 @@ log(sed/平均) を [-10, 10] に切って 5 で割る）。出力: `density`。
 | `julia_optopus` | `""` | 文字列 | JuliaOptopus のフォルダ（仕様ファイルからの相対か絶対）。空なら環境変数 JULIA_OPTOPUS |
 | `iters` | `100` | 1 以上 10000 以下の整数 | 1 回の最適化の MMA の反復の上限（収束したら早く終わる） |
 | `radius` | `1.5` | 1 以上 6 以下の数 | 密度フィルタの半径（要素数） |
+| `binarize` | `false` | true か false | 正解（self）を密度 0.5 で白黒にする（0.5 以上を 1）。入力（free）はそのまま。評価の判定も 0.5 なので、オーバーハング・浮きは変わらない |
 | `workers` | `4` | 1 以上 256 以下の整数 | 並列に走らせる Julia のプロセス数（それぞれ最初に JuliaOptopus をコンパイルする） |
 | `n_test` | `60` | 0 以上の整数 | テストの件数（学習に使わない。評価はこれで行う） |
 | `n_val` | `30` | 0 以上の整数 | 検証の件数（毎エポックの検証の損失。最良のエポックの選択に使う） |
@@ -69,6 +70,11 @@ log(sed/平均) を [-10, 10] に切って 5 で割る）。出力: `density`。
 1 件解くごとに `--out` の下の `optopus/cases/` に保存する。途中で止めても（Ctrl-C・`kill`）、同じ仕様・同じ `--out` で
 もう一度走らせればまだの件だけを解く。`seed`・格子・`iters`・`radius` などを変えると最初から解く。件数 `n` を
 増やすだけなら、前に解いた件はそのまま使う（件 i の条件は `seed` と i だけで決まる）。
+
+`binarize: true` で正解だけを 0.5 で白黒にする（JuliaOptopus の結果にはグレーが残る。入力はそのまま）。正解の
+コンプライアンス（`aux` の `compliance`）は白黒の形で計算する。`binarize` だけを変えたときは JuliaOptopus を解き直さない。
+`summary.md` に、白黒にして変わった体積（`binarize_volume_change_median` / `_min`）とコンプライアンスの比
+（`binarize_compliance_ratio_median` / `_max`。白黒 ÷ 元）が出る。`gray_target_median` は白黒にする前の値。
 
 入力（要素の格子）: `design`（free の結果）・`volfrac`・`fix_x`・`fix_y`・`load_x`・`load_y`・`base`
 （ベースプレートに載る層が 1。造形の向きを表す）。出力: `density`（self の結果）。`aux`: 節点の固定・荷重、正解の
