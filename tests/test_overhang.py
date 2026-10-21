@@ -51,7 +51,7 @@ def test_cases_are_reproducible_and_checked():
         optopus_overhang.optopus_root({**spec, "julia_optopus": "/nonexistent"})
 
 
-def _stand_in(spec, cases, work, progress):
+def _stand_in(spec, cases, work, progress, **stage):
     """What JuliaOptopus returns, made up: free = a block on the far side (overhang), self = the base layer."""
     n, H, W = spec["n"], spec["nely"], spec["nelx"]
     free, self_ = np.zeros((n, H, W)), np.zeros((n, H, W))
@@ -92,7 +92,7 @@ def test_optopus_overhang_generative_pipeline(tmp_path, monkeypatch):
 
 
 def test_binarize_thresholds_only_the_target(tmp_path, monkeypatch):
-    def gray(spec, cases, work, progress):                  # the stand-in with gray left in both designs
+    def gray(spec, cases, work, progress, **stage):         # the stand-in with gray left in both designs
         res = _stand_in(spec, cases, work, progress)
         res["free"] = 0.6 * res["free"] + 0.2
         res["self"] = 0.7 * res["self"] + 0.3 * (1 - res["self"]) * 0.9     # 0.7 on the base layer, 0.27 elsewhere
@@ -139,3 +139,18 @@ def test_julia_optopus_solves_cases(tmp_path):
     _done(jobs.run_data(more, str(tmp_path / "d")))
     assert sum(p.read_text().count("[ml_dataset] case") for p in work.glob("optopus_*.log")) == 2
     assert dataset.load(tmp_path / "d").x.shape[0] == 12
+
+    # the minimum size continuation starts from the target: free / self are not solved again
+    plain = dataset.load(tmp_path / "d")
+    for p in work.glob("optopus_*.log"):
+        p.unlink()
+    refined = specs.data_spec({**OVERHANG_SPEC, "n": 12, "iters": 5, "workers": 2, "min_size_radius": 3.0,
+                               "min_size_iters": 20})
+    _done(jobs.run_data(refined, str(tmp_path / "d")))
+    assert not list(work.glob("optopus_*.log"))                    # no free / self process was started
+    assert len(list((work / "min_size" / "cases").glob("case_*.npz"))) == 12
+    m = json.loads((tmp_path / "d" / "metrics.json").read_text())
+    assert 0 <= m["min_size_constraint_met_share"] <= 1 and m["min_size_compliance_ratio_median"] > 0
+    ds_r = dataset.load(tmp_path / "d")
+    assert np.array_equal(ds_r.x, plain.x) and not np.array_equal(ds_r.y, plain.y)   # only the target changes
+    assert 0 <= ds_r.y.min() and ds_r.y.max() <= 1

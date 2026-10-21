@@ -19,7 +19,9 @@ x channels (element grid ``(nely, nelx)``):
     fix_x, fix_y   1 where an element touches a node fixed in x / y
     load_x, load_y the load on the nodes of the element (sum of its corner nodes)
     base           1 on the layer that lies on the base plate (gives the build direction)
-y channels: density (the self design, 1 = material; with ``binarize`` thresholded at 0.5)
+y channels: density (the self design, 1 = material; with ``min_size_radius`` > 0 the self design continued with
+            the minimum length scale constraint of Zhou et al. 2015 (filter radius ``min_size_radius``,
+            G_s, G_v <= ``min_size_eps``); with ``binarize`` thresholded at 0.5)
 aux: fix, load (node images), volfrac, compliance (of the self design by ``fem.FEM``, the solver the
      evaluation uses), design_compliance (of the free design), build (index in
      ``overhang.BUILD_DIRECTIONS``), optopus_compliance (JuliaOptopus's own value for the self design);
@@ -64,6 +66,18 @@ KEYS = [n_key(600, ("件数（1 件ごとに JuliaOptopus で最適化を 2 回�
         Key("iters", 100, Int(1, 10000), ("1 回の最適化の MMA の反復の上限（収束したら早く終わる）",
                                           "MMA iteration limit per optimization (stops early when converged)")),
         Key("radius", 1.5, Num(1, 6), ("密度フィルタの半径（要素数）", "density filter radius (elements)")),
+        Key("min_size_radius", 0, Num(0, 6),
+            ("0 より大きいと、正解（self）を初期値にして最小部材寸法の幾何制約（Zhou ら 2015）つきで最適化を続け、"
+             "その結果を正解にする。値はそのときの密度フィルタの半径（要素数。3 が目安）。0 で続けない",
+             "> 0: continue the optimization from the target (self) with the minimum length scale constraint "
+             "(geometric constraints, Zhou et al. 2015) and use the result as the target; the value is the "
+             "density filter radius of that run (elements, 3 is a good start). 0 = no continuation")),
+        Key("min_size_eps", 0.5, Num(0, 100, lo_open=True),
+            ("最小寸法の幾何制約の許容値 ε（G_s, G_v ≤ ε。要素の面積が単位）。小さいほど厳しい",
+             "tolerance ε of the minimum length scale constraint (G_s, G_v <= ε, in element areas); "
+             "smaller is stricter")),
+        Key("min_size_iters", 100, Int(1, 10000), ("続きの最適化の MMA の反復の上限",
+                                                   "MMA iteration limit of the continued optimization")),
         Key("binarize", False, Bool(),
             ("正解（self）を密度 0.5 で白黒にする（0.5 以上を 1）。入力（free）はそのまま。評価の判定も 0.5 なので、"
              "オーバーハング・浮きは変わらない",
@@ -113,20 +127,21 @@ def make_cases(spec: dict) -> dict:
 CASE_KEYS = ("fix", "load", "volfrac", "build")
 
 
-def _keep_solved(work: Path, parts: Path, want: dict) -> None:
+def _keep_solved(work: Path, parts: Path, want: dict, per_case: tuple = CASE_KEYS) -> None:
     """Keep the saved results whose case and settings are unchanged; remove the rest (e.g. a larger ``n``
-    with the same seed keeps every case solved before, since case ``i`` depends only on the seed and ``i``)."""
+    with the same seed keeps every case solved before, since case ``i`` depends only on the seed and ``i``).
+    ``per_case`` are the arrays with one row per case; the other entries of ``want`` are settings."""
     old = None
     if (work / "cases.npz").is_file():
         with np.load(work / "cases.npz") as f:
             old = {k: f[k] for k in f.files}
     same = (old is not None and set(old) == set(want)
-            and all(np.array_equal(old[k], want[k]) for k in want if k not in CASE_KEYS)
-            and all(old[k].shape[1:] == want[k].shape[1:] for k in CASE_KEYS))
+            and all(np.array_equal(old[k], want[k]) for k in want if k not in per_case)
+            and all(old[k].shape[1:] == want[k].shape[1:] for k in per_case))
     for p in parts.glob("case_*.npz") if parts.is_dir() else []:
         i = int(p.stem.split("_")[1])
         if not (same and i < len(old["volfrac"]) and i < len(want["volfrac"])
-                and all(np.array_equal(old[k][i], want[k][i]) for k in CASE_KEYS)):
+                and all(np.array_equal(old[k][i], want[k][i]) for k in per_case)):
             p.unlink()
     np.savez(work / "cases.npz", **want)
 
@@ -135,19 +150,24 @@ def _interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
+def run_optopus(spec: dict, cases: dict, work: Path, progress, per_case: tuple = CASE_KEYS,
+                settings: dict | None = None, label: str = "free + self", span: tuple = (0.0, 0.95)) -> dict:
     """Solve the cases with JuliaOptopus in ``workers`` processes; returns the merged results.
 
     Each case is saved as ``work/cases/case_<i>.npz`` as soon as it is solved, so a run stopped partway
     resumes where it stopped when started again with the same spec and ``--out`` (only the missing cases
     are solved). Results of cases that change (other ``seed``, grid, ``iters``, ...) are removed; a larger
-    ``n`` keeps the cases solved before."""
+    ``n`` keeps the cases solved before.
+
+    ``settings`` are the driver arguments (default: free + self with ``iters`` and ``radius``); with
+    ``init`` in ``per_case`` the driver continues the self optimization from it."""
     root = optopus_root(spec)
     work.mkdir(parents=True, exist_ok=True)
     parts = work / "cases"
-    want = {**{k: cases[k] for k in CASE_KEYS}, "iters": np.asarray(spec["iters"]),
-            "radius": np.asarray(float(spec["radius"]))}
-    _keep_solved(work, parts, want)
+    if settings is None:
+        settings = {"iters": spec["iters"], "radius": float(spec["radius"])}
+    want = {**{k: cases[k] for k in per_case}, **{k: np.asarray(v) for k, v in settings.items()}}
+    _keep_solved(work, parts, want, per_case)
     parts.mkdir(exist_ok=True)
     n = spec["n"]
     todo = [i for i in range(n) if not (parts / f"case_{i}.npz").is_file()]
@@ -159,11 +179,10 @@ def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
     try:
         for w in range(workers if todo else 0):
             mine = np.asarray(todo[w::workers])        # interleaved: neighbouring cases take similar times
-            np.savez(work / f"todo_{w}.npz", **{k: cases[k][mine] for k in CASE_KEYS}, index=mine)
+            np.savez(work / f"todo_{w}.npz", **{k: cases[k][mine] for k in per_case}, index=mine)
             log = open(work / f"optopus_{w}.log", "w")
             cmd = ["julia", f"--project={root}", "-t", "1", str(root / DRIVER), f"cases={work / f'todo_{w}.npz'}",
-                   f"outdir={parts}", f"iters={spec['iters']}", f"radius={float(spec['radius'])}",
-                   "design=element"]
+                   f"outdir={parts}", *(f"{k}={v}" for k, v in settings.items()), "design=element"]
             # one core per worker. JuliaOptopus raises BLAS to every core around each sparse direct solve
             # unless JULIAOPTOPUS_BLAS_THREADS is set (LinearAlgebraKit/parallel_blas.jl): with several
             # workers that oversubscribes the cores and a case takes minutes instead of seconds
@@ -175,7 +194,7 @@ def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
             time.sleep(5)
             done = sum(1 for _ in parts.glob("case_*.npz"))
             if done != done_before:
-                progress(0.95 * done / n, f"JuliaOptopus free + self {done}/{n}"
+                progress(span[0] + (span[1] - span[0]) * done / n, f"JuliaOptopus {label} {done}/{n}"
                          + (" (compiling JuliaOptopus)" if done == before else ""))
                 done_before = done
         bad = [w for w, p in enumerate(procs) if p.returncode != 0]
@@ -208,8 +227,30 @@ def generate(spec: dict, out_dir, progress) -> dict:
     nelx, nely, n = spec["nelx"], spec["nely"], spec["n"]
     cases = make_cases(spec)
     t0 = time.time()
-    res = run_optopus(spec, cases, Path(out_dir) / "optopus", progress)
+    refine = spec["min_size_radius"] > 0
+    res = run_optopus(spec, cases, Path(out_dir) / "optopus", progress, span=(0.0, 0.45 if refine else 0.95))
+    first_self = np.clip(res["self"], 0, 1)
     minutes = (time.time() - t0) / 60
+    min_size = {}
+    if refine:
+        # solve self again from the target with the minimum length scale constraint (the input stays free)
+        t1 = time.time()
+        ref = run_optopus(spec, {**{k: cases[k] for k in CASE_KEYS}, "init": first_self},
+                          Path(out_dir) / "optopus" / "min_size", progress, per_case=CASE_KEYS + ("init",),
+                          settings={"iters": spec["min_size_iters"], "radius": float(spec["min_size_radius"]),
+                                    "geo_eps": float(spec["min_size_eps"])},
+                          label="min size", span=(0.45, 0.95))
+        eps = float(spec["min_size_eps"])
+        ok = (ref["self_Gs"] <= eps * 1.01) & (ref["self_Gv"] <= eps * 1.01)
+        cr = ref["self_compliance"] / res["self_compliance"]
+        min_size = {"min_size_minutes": round((time.time() - t1) / 60, 1),
+                    "min_size_constraint_met_share": round(float(ok.mean()), 3),
+                    "min_size_compliance_ratio_median": round(float(np.median(cr)), 4),
+                    "min_size_compliance_ratio_p95": round(float(np.percentile(cr, 95)), 4),
+                    "min_size_compliance_ratio_max": round(float(cr.max()), 4),
+                    "min_size_gray_before_median": round(float(np.median(res["self_gray"])), 3)}
+        res = {**res, "self": ref["self"], "self_compliance": ref["self_compliance"],
+               "self_floating": ref["self_floating"], "self_gray": ref["self_gray"]}
     free, gray_target = np.clip(res["free"], 0, 1), np.clip(res["self"], 0, 1)
     target = (gray_target >= 0.5).astype(gray_target.dtype) if spec["binarize"] else gray_target
     fem = FEM(nelx, nely)
@@ -248,7 +289,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
                   "binarize_compliance_ratio_median": round(float(np.median(comps / gcomps)), 4),
                   "binarize_compliance_ratio_max": round(float(np.max(comps / gcomps)), 4)}
     return {"samples": n, "grid": f"{nelx}x{nely}", "minutes": round(minutes, 1), "binarize": spec["binarize"],
-            **binary,
+            **binary, **min_size,
             "overhang_input_mean": round(float(np.mean(oh_in)), 4),
             "overhang_input_share": round(float(np.mean(np.asarray(oh_in) > 0)), 3),
             "overhang_target_mean": round(float(np.mean(oh_out)), 4),
