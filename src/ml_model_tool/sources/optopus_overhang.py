@@ -43,7 +43,7 @@ from agk.lang import tr
 
 from .. import dataset
 from ..fem import FEM, node_masks_to_dofs
-from ..keys import Bool, Int, Key, Num, SpecError, Subset, Text
+from ..keys import Bool, Int, Ints, Key, Num, SpecError, Subset, Text
 from ..overhang import BUILD_DIRECTIONS, base_plate, overhang_volume
 from .common import SUPPORTS, n_key, simp_keys, split_keys
 from .simp_topopt import _node_to_element, random_case
@@ -78,6 +78,24 @@ KEYS = [n_key(600, ("件数（1 件ごとに JuliaOptopus で最適化を 2 回�
              "smaller is stricter")),
         Key("min_size_iters", 100, Int(1, 10000), ("続きの最適化の MMA の反復の上限",
                                                    "MMA iteration limit of the continued optimization")),
+        Key("simple_radius", 0, Num(0, 8),
+            ("0 より大きいと、self をこの密度フィルタの半径（要素数）と β の継続法で一様な初期値から解き直し、その結果を正解に"
+             "する（構造が単純になる。入力 free はそのまま）。64×32 で 4 が目安。0 で解き直さない",
+             "> 0: solve self again from a uniform start with this density filter radius (elements) and a beta "
+             "continuation, and use it as the target (simpler structures; the input free stays). 4 suits 64x32. "
+             "0 = no")),
+        Key("simple_beta", [8, 12, 16, 24, 32], Ints(1, 128, 1, 16),
+            ("解き直す self の β の継続法: β = 5 で始め、simple_beta_on 反復目から simple_beta_every 反復ごとにこの値へ順に上げる",
+             "beta continuation of the re-solved self: start at 5 and raise beta to these values one by one, "
+             "every simple_beta_every iterations from iteration simple_beta_on")),
+        Key("simple_beta_on", 60, Int(1, 10000), ("β を上げ始める反復", "iteration where beta starts to rise")),
+        Key("simple_beta_every", 30, Int(1, 10000), ("β を上げる間隔（反復）", "iterations between beta steps")),
+        Key("simple_iters", 350, Int(1, 10000), ("解き直す self の MMA の反復の上限",
+                                                 "MMA iteration limit of the re-solved self")),
+        Key("max_target_gray", 1.0, Num(0, 1),
+            ("正解（白黒にする前）のグレーの割合（材料のうち密度 0.1〜0.9 の割合）がこれを超える件をデータから外す。1 で外さない",
+             "drop the samples whose target (before binarize) has a larger gray share (share of the material with "
+             "density 0.1-0.9) than this; 1 = keep all")),
         Key("binarize", False, Bool(),
             ("正解（self）を密度 0.5 で白黒にする（0.5 以上を 1）。入力（free）はそのまま。評価の判定も 0.5 なので、"
              "オーバーハング・浮きは変わらない",
@@ -104,6 +122,9 @@ def optopus_root(spec: dict) -> Path:
 
 
 def check(spec: dict) -> None:
+    if spec["min_size_radius"] > 0 and spec["simple_radius"] > 0:
+        raise SpecError("simple_radius", tr("min_size_radius と simple_radius は同時に使えない（どちらか 1 つ）",
+                                            "min_size_radius and simple_radius cannot be used together"))
     if shutil.which("julia") is None:
         raise SpecError("julia_optopus", tr("julia がコマンドとして見つからない（juliaup などで Julia 1.10.11 を入れる）",
                                             "julia is not on the PATH (install Julia 1.10.11, e.g. with juliaup)"))
@@ -227,12 +248,12 @@ def generate(spec: dict, out_dir, progress) -> dict:
     nelx, nely, n = spec["nelx"], spec["nely"], spec["n"]
     cases = make_cases(spec)
     t0 = time.time()
-    refine = spec["min_size_radius"] > 0
-    res = run_optopus(spec, cases, Path(out_dir) / "optopus", progress, span=(0.0, 0.45 if refine else 0.95))
+    second = spec["min_size_radius"] > 0 or spec["simple_radius"] > 0       # a second JuliaOptopus stage follows
+    res = run_optopus(spec, cases, Path(out_dir) / "optopus", progress, span=(0.0, 0.45 if second else 0.95))
     first_self = np.clip(res["self"], 0, 1)
     minutes = (time.time() - t0) / 60
     min_size = {}
-    if refine:
+    if spec["min_size_radius"] > 0:
         # solve self again from the target with the minimum length scale constraint (the input stays free)
         t1 = time.time()
         ref = run_optopus(spec, {**{k: cases[k] for k in CASE_KEYS}, "init": first_self},
@@ -251,6 +272,33 @@ def generate(spec: dict, out_dir, progress) -> dict:
                     "min_size_gray_before_median": round(float(np.median(res["self_gray"])), 3)}
         res = {**res, "self": ref["self"], "self_compliance": ref["self_compliance"],
                "self_floating": ref["self_floating"], "self_gray": ref["self_gray"]}
+    simple = {}
+    if spec["simple_radius"] > 0:
+        # solve self alone again with a large filter and a beta continuation: simpler, sharper targets
+        t1 = time.time()
+        ref = run_optopus(spec, cases, Path(out_dir) / "optopus" / "simple", progress,
+                          settings={"iters": spec["simple_iters"], "radius": float(spec["simple_radius"]),
+                                    "self_beta": 5.0, "self_beta_seq": ",".join(str(b) for b in spec["simple_beta"]),
+                                    "self_beta_on": spec["simple_beta_on"], "self_beta_every": spec["simple_beta_every"],
+                                    "self_only": "true"},
+                          label="simple self", span=(0.45, 0.95))
+        cr = ref["self_compliance"] / res["self_compliance"]
+        simple = {"simple_minutes": round((time.time() - t1) / 60, 1),
+                  "simple_gray_before_median": round(float(np.median(res["self_gray"])), 3),
+                  "simple_optopus_compliance_ratio_median": round(float(np.median(cr)), 4)}
+        res = {**res, "self": ref["self"], "self_compliance": ref["self_compliance"],
+               "self_floating": ref["self_floating"], "self_gray": ref["self_gray"]}
+    # drop the samples whose target keeps too much gray
+    keep = np.flatnonzero(res["self_gray"] <= spec["max_target_gray"])
+    dropped = {}
+    if len(keep) < n:
+        dropped = {"dropped_gray": int(n - len(keep)), "kept": int(len(keep))}
+        res = {k: v[keep] for k, v in res.items()}
+        cases = {**{k: cases[k][keep] for k in CASE_KEYS}, "kinds": [cases["kinds"][i] for i in keep]}
+        n = len(keep)
+        if spec["n_test"] + spec["n_val"] >= n:
+            raise SpecError("max_target_gray", tr(f"グレーで外した残り {n} 件が n_test + n_val 以下になった",
+                                                  f"only {n} samples are left after dropping gray ones"))
     free, gray_target = np.clip(res["free"], 0, 1), np.clip(res["self"], 0, 1)
     target = (gray_target >= 0.5).astype(gray_target.dtype) if spec["binarize"] else gray_target
     fem = FEM(nelx, nely)
@@ -279,7 +327,8 @@ def generate(spec: dict, out_dir, progress) -> dict:
                       "volfrac": cases["volfrac"].astype(np.float32), "compliance": comps,
                       "design_compliance": dcomps, "build": cases["build"].astype(np.int8),
                       "optopus_compliance": res["self_compliance"],
-                      "support": np.asarray([SUPPORTS.index(k) for k in cases["kinds"]], np.int8)})
+                      "support": np.asarray([SUPPORTS.index(k) for k in cases["kinds"]], np.int8),
+                      "source_index": keep.astype(np.int32)})
     agree = np.abs(gcomps / res["self_compliance"] - 1)        # the same FEM on JuliaOptopus's own image
     binary = {}
     if spec["binarize"]:
@@ -289,7 +338,7 @@ def generate(spec: dict, out_dir, progress) -> dict:
                   "binarize_compliance_ratio_median": round(float(np.median(comps / gcomps)), 4),
                   "binarize_compliance_ratio_max": round(float(np.max(comps / gcomps)), 4)}
     return {"samples": n, "grid": f"{nelx}x{nely}", "minutes": round(minutes, 1), "binarize": spec["binarize"],
-            **binary, **min_size,
+            **binary, **min_size, **simple, **dropped,
             "overhang_input_mean": round(float(np.mean(oh_in)), 4),
             "overhang_input_share": round(float(np.mean(np.asarray(oh_in) > 0)), 3),
             "overhang_target_mean": round(float(np.mean(oh_out)), 4),

@@ -111,6 +111,43 @@ def test_binarize_thresholds_only_the_target(tmp_path, monkeypatch):
     assert m["binarize_volume_change_min"] < 0 and m["overhang_target_mean"] == 0
 
 
+def test_max_target_gray_drops_gray_targets(tmp_path, monkeypatch):
+    def grayish(spec, cases, work, progress, **stage):
+        res = _stand_in(spec, cases, work, progress)
+        res["self_gray"] = np.linspace(0.0, 0.9, spec["n"])          # samples 7, 8, 9 are above 0.65
+        return res
+
+    monkeypatch.setattr(optopus_overhang, "run_optopus", grayish)
+    monkeypatch.setattr(optopus_overhang, "check", lambda spec: None)
+    _done(jobs.run_data(specs.data_spec({**OVERHANG_SPEC, "max_target_gray": 0.65}), str(tmp_path / "d")))
+    ds = dataset.load(tmp_path / "d")
+    m = json.loads((tmp_path / "d" / "metrics.json").read_text())
+    assert ds.x.shape[0] == 7 and m["dropped_gray"] == 3 and m["kept"] == 7
+    assert list(ds.aux["source_index"]) == list(range(7)) and ds.split.shape == (7,)
+
+
+@pytest.mark.skipif(not os.environ.get("JULIA_OPTOPUS"), reason="set JULIA_OPTOPUS to a JuliaOptopus checkout")
+def test_simple_self_resolves_only_self(tmp_path):
+    base = {**OVERHANG_SPEC, "n": 10, "iters": 5, "workers": 2}
+    _done(jobs.run_data(specs.data_spec(base), str(tmp_path / "d")))
+    plain = dataset.load(tmp_path / "d")
+    work = tmp_path / "d" / "optopus"
+    for p in work.glob("optopus_*.log"):
+        p.unlink()
+    simple = {**base, "simple_radius": 2.0, "simple_iters": 30, "simple_beta": [8, 12], "simple_beta_on": 10,
+              "simple_beta_every": 10}
+    _done(jobs.run_data(specs.data_spec(simple), str(tmp_path / "d")))
+    assert not list(work.glob("optopus_*.log"))                    # free / self were not solved again
+    assert len(list((work / "simple" / "cases").glob("case_*.npz"))) == 10
+    assert not (work / "min_size").exists()                        # only the simple stage ran
+    ds = dataset.load(tmp_path / "d")
+    assert np.array_equal(ds.x, plain.x) and not np.array_equal(ds.y, plain.y)
+    log = "".join(p.read_text() for p in (work / "simple").glob("optopus_*.log"))
+    assert "β → 12.0" in log                                         # the beta continuation ran
+    with pytest.raises(SpecError, match="simple_radius"):
+        optopus_overhang.check({**defaults(optopus_overhang.KEYS), **simple, "min_size_radius": 3.0})
+
+
 @pytest.mark.skipif(not os.environ.get("JULIA_OPTOPUS"), reason="set JULIA_OPTOPUS to a JuliaOptopus checkout")
 def test_julia_optopus_solves_cases(tmp_path):
     spec = specs.data_spec({**OVERHANG_SPEC, "iters": 30, "workers": 2})
