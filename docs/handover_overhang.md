@@ -31,10 +31,13 @@
 
 ## 3. ブランチ
 
-| リポジトリ | ブランチ | 元 |
+どちらも **main に取り込み済み**（2026-10-20）。別の PC では main をそのまま使う。
+元のブランチで既に clone してある場合は、それぞれのフォルダで `git checkout main` と `git pull` をする。
+
+| リポジトリ | 取り込んだ PR | 元のブランチ |
 |---|---|---|
-| github.com/ToPo-ToPo-ToPo/ml-model-tool | `claude/topology-optimization-generative-model-6d790b` | main |
-| github.com/ToPo-ToPo-ToPo/JuliaOptopus | `claude/ml-overhang-data` | main（2026-10-19 の PR #149 の時点。`feat/am-overhang-constraints` は main に取り込み済み） |
+| github.com/ToPo-ToPo-ToPo/ml-model-tool | [#4](https://github.com/ToPo-ToPo-ToPo/ml-model-tool/pull/4) | `claude/topology-optimization-generative-model-6d790b` |
+| github.com/ToPo-ToPo-ToPo/JuliaOptopus | [#150](https://github.com/ToPo-ToPo-ToPo/JuliaOptopus/pull/150) | `claude/ml-overhang-data` |
 
 ### ml-model-tool の変更
 
@@ -106,7 +109,6 @@
 ```bash
 git clone https://github.com/ToPo-ToPo-ToPo/ml-model-tool.git
 cd ml-model-tool
-git checkout claude/topology-optimization-generative-model-6d790b
 uv sync
 cd ..
 ```
@@ -114,7 +116,6 @@ cd ..
 ```bash
 git clone https://github.com/ToPo-ToPo-ToPo/JuliaOptopus.git
 cd JuliaOptopus
-git checkout claude/ml-overhang-data
 ```
 
 Julia は **1.10.11 固定**（JuliaOptopus の README。1.11 以降は不可）。`julia` コマンドが 1.10.11 になるようにする。
