@@ -114,3 +114,8 @@ def test_julia_optopus_solves_cases(tmp_path):
     other = specs.data_spec({**OVERHANG_SPEC, "iters": 5, "workers": 2})
     _done(jobs.run_data(other, str(tmp_path / "d")))
     assert sum(p.read_text().count("[ml_dataset] case") for p in work.glob("optopus_*.log")) == 10
+    # more samples with the same seed: case i does not change, so only the new ones are solved
+    more = specs.data_spec({**OVERHANG_SPEC, "n": 12, "iters": 5, "workers": 2})
+    _done(jobs.run_data(more, str(tmp_path / "d")))
+    assert sum(p.read_text().count("[ml_dataset] case") for p in work.glob("optopus_*.log")) == 2
+    assert dataset.load(tmp_path / "d").x.shape[0] == 12

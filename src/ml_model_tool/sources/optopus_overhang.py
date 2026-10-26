@@ -108,11 +108,22 @@ def make_cases(spec: dict) -> dict:
 CASE_KEYS = ("fix", "load", "volfrac", "build")
 
 
-def _same_cases(path: Path, want: dict) -> bool:
-    if not path.is_file():
-        return False
-    with np.load(path) as old:
-        return set(old.files) == set(want) and all(np.array_equal(old[k], want[k]) for k in want)
+def _keep_solved(work: Path, parts: Path, want: dict) -> None:
+    """Keep the saved results whose case and settings are unchanged; remove the rest (e.g. a larger ``n``
+    with the same seed keeps every case solved before, since case ``i`` depends only on the seed and ``i``)."""
+    old = None
+    if (work / "cases.npz").is_file():
+        with np.load(work / "cases.npz") as f:
+            old = {k: f[k] for k in f.files}
+    same = (old is not None and set(old) == set(want)
+            and all(np.array_equal(old[k], want[k]) for k in want if k not in CASE_KEYS)
+            and all(old[k].shape[1:] == want[k].shape[1:] for k in CASE_KEYS))
+    for p in parts.glob("case_*.npz") if parts.is_dir() else []:
+        i = int(p.stem.split("_")[1])
+        if not (same and i < len(old["volfrac"]) and i < len(want["volfrac"])
+                and all(np.array_equal(old[k][i], want[k][i]) for k in CASE_KEYS)):
+            p.unlink()
+    np.savez(work / "cases.npz", **want)
 
 
 def _interrupt(signum, frame):
@@ -124,15 +135,14 @@ def run_optopus(spec: dict, cases: dict, work: Path, progress) -> dict:
 
     Each case is saved as ``work/cases/case_<i>.npz`` as soon as it is solved, so a run stopped partway
     resumes where it stopped when started again with the same spec and ``--out`` (only the missing cases
-    are solved). A different spec (other cases or settings) starts over."""
+    are solved). Results of cases that change (other ``seed``, grid, ``iters``, ...) are removed; a larger
+    ``n`` keeps the cases solved before."""
     root = optopus_root(spec)
     work.mkdir(parents=True, exist_ok=True)
     parts = work / "cases"
     want = {**{k: cases[k] for k in CASE_KEYS}, "iters": np.asarray(spec["iters"]),
             "radius": np.asarray(float(spec["radius"]))}
-    if not _same_cases(work / "cases.npz", want):
-        shutil.rmtree(parts, ignore_errors=True)
-        np.savez(work / "cases.npz", **want)
+    _keep_solved(work, parts, want)
     parts.mkdir(exist_ok=True)
     n = spec["n"]
     todo = [i for i in range(n) if not (parts / f"case_{i}.npz").is_file()]
