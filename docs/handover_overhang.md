@@ -1,6 +1,6 @@
 # 引き継ぎ: オーバーハングを直す生成モデル（JuliaOptopus の self で教師データを作る）
 
-2026-10-20 時点。別の PC でデータ作成から続けるための資料。
+2026-11-17 時点（最初の版は 2026-10-20）。別の PC で続けるための資料。データとモデルの運び方は「5.1」。
 
 ## 1. 目的
 
@@ -27,7 +27,9 @@
 | コード（2 つのリポジトリ） | できている。テスト 95 件すべて通過（本物の JuliaOptopus を使う試験を含む。2026-10-20） |
 | データ作成 | 600・2000・5000 件が済み（2026-10-20。14 コアの Mac で `workers` 12）。600 件は 7.5 分、2000 件・5000 件は前の件を使い回して新しい件だけを解いた（1400 件で 15.7 分、3000 件で 38 分）。データはその PC の `~/overhang_work/jobs/data1`・`data2`・`data3`（リポジトリには入れていない）。結果は「7.」 |
 | 正解の作り直し | 済み（2026-10-22）。self を半径 4・β 5→32 の継続法で解き直した単純で白黒に近い正解。グレーの多い 201 件を外し 4799 件（`~/overhang_work/jobs/data3sf`）。「7.」の最初の節 |
-| 学習・評価 | 拡散モデルで済み（2026-10-20）。5000 件で学習すると、オーバーハングのある案 18%（材料の 0.30%）、コンプライアンス比 1.024（1.05 以下が 78%）。結果と次の案は「7.」「8.」 |
+| 学習・評価 | 単純化した正解（`data3sf`）で拡散（`diffsf3`）とフロー（`flowsf3`）が済み（2026-10-22）。フローのほうが良く、テスト 500 件で IoU 0.893・コンプライアンス比 1.011・造れない材料が 1% を超える案 3%・浮いた材料が 1% を超える案 0%。今の本命はフロー。結果は「7.」の最初の節。最初の正解（`data3`）の 5000 件では、拡散でオーバーハングのある案 18%、コンプライアンス比 1.024 |
+| 報告書 | `docs/report_overhang/report.pdf`（LaTeX は `report.tex`、図は `make_figures.py` で `~/overhang_work/jobs` から作り直せる）。目的・手法・データセット・結果のまとめ。結果のページ（アーティファクト）: https://claude.ai/artifact/EuiRDwY1FH4UcJwB7LPHrT |
+| 論文 | これから書く予定（2026-11-17）。足りないもの: 最適化との計算時間の比較、簡単な方法（造れない材料を消す後処理、生成した形を初期値に短く最適化し直す）との比較、造形方向・格子の大きさを変えた場合、学習の乱数を変えたときのばらつき、先行研究の調査 |
 | 計算が遅い問題 | 解決（2026-10-20）。下の「4.1」 |
 
 ## 3. ブランチ
@@ -36,6 +38,14 @@
 |---|---|---|
 | github.com/ToPo-ToPo-ToPo/ml-model-tool | `claude/topology-optimization-generative-model-6d790b` | main |
 | github.com/ToPo-ToPo-ToPo/JuliaOptopus | `claude/ml-overhang-data` | main（2026-10-19 の PR #149 の時点。`feat/am-overhang-constraints` は main に取り込み済み） |
+
+- ml-model-tool のブランチは main への PR #6 が開いたまま（2026-11-17 に最新まで push 済み）
+- JuliaOptopus のブランチは、最初の 2 件（`ml_dataset.jl` と `outdir=`）が PR #150 で main に入り、GitHub 上のブランチは
+  一度消えた。そのあとの 2 件（`d1735549` 最小寸法の幾何制約、`63877cad` self だけを解くモード・β の継続法・穴の数の制約）を
+  2026-11-17 に同じ名前で push し直した。この 2 件はまだ main に入っていない。`simple_radius`（今の正解の作り方）は
+  `63877cad` の `self_only` と β の継続法を使うので、別の PC でもこのブランチを使う
+- 界面の飽和度による最小寸法の制約（試したが採用しなかった方法）のコードは、当時査読中だった論文の方法なので
+  コミットせずに消した。その論文は 2026-11 時点で掲載済み。必要なら作り直す
 
 ### ml-model-tool の変更
 
@@ -139,11 +149,47 @@ ml-model-tool に JuliaOptopus の場所を教える（データ仕様の `julia
 export JULIA_OPTOPUS=/path/to/JuliaOptopus
 ```
 
-動作確認（ml-model-tool のフォルダで。1 分ほど。68 件が通れば準備完了）:
+動作確認（ml-model-tool のフォルダで。`JULIA_OPTOPUS` を設定すると本物の JuliaOptopus を使う試験も走り、数分かかる。
+2026-10-22 の時点で 98 件が通った）:
 
 ```bash
 uv run pytest -q
 ```
+
+### 5.1 データとモデルを運ぶ
+
+データとモデルは git に入れていない。元の PC で `~/overhang_work` から、1 件ごとの Julia の結果（`jobs/*/optopus/`、
+データセットを作り直すときだけ使う。5 GB 超）と論文のコピー（`papers/`）を除いてまとめた:
+
+| ファイル | 大きさ | SHA-256 |
+|---|---|---|
+| `~/overhang_work_transfer_20261117.tar.gz` | 763 MB | `f1d24e6c81c9e8cc671e417fad1b5ff019a8c6affea67266d03d5908fe0958a7` |
+
+Google Drive などで新しい PC のホームフォルダに置き、確かめてから展開する（`~/overhang_work` ができる）:
+
+```bash
+shasum -a 256 ~/overhang_work_transfer_20261117.tar.gz
+```
+
+```bash
+tar -xzf ~/overhang_work_transfer_20261117.tar.gz -C ~
+```
+
+中身の主なもの（`~/overhang_work/jobs/`）:
+
+| フォルダ | 中身 |
+|---|---|
+| `data3sf` | 今の本命のデータセット（単純化した正解、4799 件）。`dataset.npz` |
+| `flowsf3`・`diffsf3` | `data3sf` で学習したフローと拡散のモデル（`model.mdlus`） |
+| `eval_flowsf3_data3sf`・`eval_diffsf3_data3sf` | テスト 500 件の評価 |
+| `test_sf70`・`eval_*_test_sf70` | 前のモデルとの比較に使った 70 件と、その評価 |
+| `data3`・`data3b`・`data3s` | 最初の正解・それを白黒にした正解・単純化した正解（白黒にする前、グレーで外す前） |
+| `diff3`・`flow3`・`novf3`・`diffbin3`・`flowbin3` | 最初の正解で学習したモデル（`novf3` は体積率を入力から外したもの） |
+| `test_common3`・`test_common3b`・`eval_*_common3*` | 最初の正解のモデルの比較に使った 291 件と、その評価 |
+
+データ仕様（`data3sf.json` など）と学習の仕様（`model.json`・`model_flow.json`）は `~/overhang_work` の直下にある。
+`optopus/` を運んでいないので、`data3sf` を `mmt data` で作り直すと JuliaOptopus で全件を解き直す（14 コアの Mac で、free と最初の self に
+約 1 時間、self の解き直しに約 2 時間）。学習・評価だけなら解き直しは要らない。
 
 ## 6. 作業手順
 
